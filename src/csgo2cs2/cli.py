@@ -23,6 +23,7 @@ from .commands import publish_cmd as cmd_publish
 from .commands import status_cmd as cmd_status
 from .commands import tools_cmd as cmd_tools
 from .commands import verify_cmd as cmd_verify
+from .commands import walkthrough_cmd as cmd_walkthrough
 from .logging_utils import error, setup_logging
 
 
@@ -65,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_publish.register(sub)
     cmd_about.register(sub)
     cmd_completion.register(sub)
+    cmd_walkthrough.register(sub)
 
     return parser
 

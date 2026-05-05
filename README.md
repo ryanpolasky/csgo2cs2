@@ -33,6 +33,47 @@ csgo2cs2 launch my_addon                      # Windows-only; opens CS2 with the
 That is the happy path. The rest of this README covers what to do when a
 specific map fails to import cleanly.
 
+If you would rather have the tool walk you through the steps interactively
+the first time, run:
+
+```bash
+csgo2cs2 walkthrough         # or: csgo2cs2 tour
+```
+
+See [Walkthrough](#walkthrough) below for what it does.
+
+## Walkthrough
+
+`csgo2cs2 walkthrough` (alias `tour`) is an interactive guided tour for a
+first-time port. It runs through six stages, explaining each one and asking
+before doing anything that writes to disk:
+
+1. **Config.** Detects whether `~/.csgo2cs2/config.json` exists; offers to
+   run `csgo2cs2 init` (with or without `--interactive`) if it does not.
+2. **External tools.** Lists the configured tools and their disk status.
+   Offers to run `csgo2cs2 tools install` for anything missing.
+3. **Install patches.** On Windows only, checks the drift state and offers
+   `csgo2cs2 doctor --fix`. Skipped on macOS and Linux.
+4. **Port.** Prompts for a Workshop URL/ID and an addon name, then asks
+   whether to apply auto-fixes, populate `addoninfo.json` from workshop
+   metadata, and export workshop images. On non-Windows hosts it falls
+   back to a `--skip-import` dry run.
+5. **Verify.** Runs `csgo2cs2 verify <addon>` against the imported addon
+   directory.
+6. **Launch.** Optional, Windows only. Runs `csgo2cs2 launch <addon>` if
+   you want the tour to drop you straight into the game.
+
+Re-running the walkthrough is safe: each stage detects its own state and
+skips when there is nothing to do. Useful flags:
+
+- `--yes` / `-y` — assume yes for every confirmation prompt
+  (non-interactive; useful for CI smoke tests).
+- `--from <stage>` — resume from a specific stage. Stages are
+  `config`, `tools`, `patches`, `port`, `verify`, `launch`.
+- `--workshop <url-or-id>` and `--addon <name>` — pre-fill the port
+  prompts so the walkthrough only asks for confirmations.
+- `--no-launch` — skip the optional launch step at the end.
+
 ## Architecture
 
 ```
@@ -151,6 +192,10 @@ csgo2cs2 publish <addon> -o my_addon.zip        # override output path
 csgo2cs2 publish <addon> --skip-verify          # skip structural checks (faster; not recommended)
 
 # misc
+csgo2cs2 walkthrough                            # interactive guided tour for first-time users
+csgo2cs2 walkthrough --yes                      # non-interactive (assume yes for every confirm)
+csgo2cs2 walkthrough --from port --workshop <id> --addon my_addon
+csgo2cs2 tour                                   # alias of `walkthrough`
 csgo2cs2 about                                  # version, attribution, links
 csgo2cs2 completion bash                        # shell completion (also: zsh, powershell)
 ```
@@ -487,6 +532,7 @@ src/csgo2cs2/
     publish_cmd.py       # csgo2cs2 publish <addon> -> upload-ready zip
     about_cmd.py         # csgo2cs2 about
     completion_cmd.py    # csgo2cs2 completion bash|zsh|powershell
+    walkthrough_cmd.py   # csgo2cs2 walkthrough (alias: tour)
   tools/                 # external tool adapters
     base.py
     steamcmd.py

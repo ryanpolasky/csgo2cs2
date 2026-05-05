@@ -27,6 +27,8 @@ SUBCOMMANDS = (
     "publish",
     "about",
     "completion",
+    "walkthrough",
+    "tour",
 )
 
 SHELLS = ("bash", "zsh", "powershell")
