@@ -7,12 +7,13 @@ from csgo2cs2.fixers import apply_all
 
 
 def _vmf(extra: str = "") -> str:
-    # sky_day01_01 is in KNOWN_CS2_SKIES so it doesn't trip skybox_unknown,
-    # leaving us with a "clean" baseline for testing the new fixers.
+    # `sky_cs_office` is in WIKI_CONFIRMED_CS2_SKIES so it doesn't trip
+    # skybox_unknown, leaving us with a clean baseline for testing the
+    # other fixers without an unrelated finding firing.
     return (
         "world\n{\n"
         '\t"classname" "worldspawn"\n'
-        '\t"skyname" "sky_day01_01"\n'
+        '\t"skyname" "sky_cs_office"\n'
         "}\n"
         'entity { "classname" "info_player_terrorist" }\n'
         'entity { "classname" "info_player_counterterrorist" }\n' + extra

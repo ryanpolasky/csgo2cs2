@@ -55,23 +55,32 @@ _EXPLANATIONS: Dict[str, Explanation] = {
             "convert; without one, the import aborts."
         ),
         fix=(
-            "auto — `csgo2cs2 analyze --fix` swaps in `cfg.default_skybox` "
-            "(default `sky_day01_01`). cs2 uses a different sky pipeline anyway, "
-            "so the visual is mostly a placeholder."
+            "auto — `csgo2cs2 analyze --fix` substitutes a wiki-confirmed cs2 "
+            "sky chosen by mood (e.g. dust2-style maps -> `sky_de_dust2`, "
+            "office-style maps -> `sky_cs_office`). Unmatched moods fall back "
+            "to `cfg.default_skybox`."
         ),
         refs=[_REF_KELLER],
     ),
     "skybox_unknown": Explanation(
         issue_id="skybox_unknown",
         title="Skybox isn't a known cs2 sky.",
-        what="The map's `skyname` value isn't in `KNOWN_CS2_SKIES` or `cfg.cs2_sky_list`.",
+        what=(
+            "The map's `skyname` value isn't in `KNOWN_CS2_SKIES` or "
+            "`cfg.cs2_sky_list`. The known set is the union of "
+            "`WIKI_CONFIRMED_CS2_SKIES` (skies documented at the Valve wiki "
+            "CS2 Sky List page) and a small set of legacy unverified names "
+            "kept for backward compatibility."
+        ),
         why=(
             "Unknown skies usually still import, but the result is undefined — "
             "you may end up with the dev sky or no sky at all."
         ),
         fix=(
-            "auto — `--fix` substitutes `cfg.default_skybox`. To accept a "
-            "community sky as valid, add it to `cs2_sky_list` in your config."
+            "auto — `--fix` substitutes a mood-matched cs2 sky from "
+            "`SKY_MOOD_RULES`, falling back to `cfg.default_skybox` if no "
+            "rule matches. To accept a community sky as valid, add it to "
+            "`cs2_sky_list` in your config."
         ),
         refs=[_REF_KELLER],
     ),
@@ -85,7 +94,7 @@ _EXPLANATIONS: Dict[str, Explanation] = {
         ),
         fix=(
             "manual — open the .vmf in Hammer and set worldspawn's Sky Name "
-            "to one of the known cs2 skies (e.g. `sky_day01_01`)."
+            "to one of the wiki-confirmed cs2 skies (e.g. `sky_cs_office`)."
         ),
         refs=[_REF_KELLER],
     ),
@@ -231,8 +240,10 @@ _EXPLANATIONS: Dict[str, Explanation] = {
             "having `csgo/` in your map's path tree confuses path resolution."
         ),
         fix=(
-            "manual — rename the offending folder (any name except `csgo` works) "
-            "and update the .vmf references."
+            "auto — `csgo2cs2 analyze --fix` bulk-renames every `csgo/` "
+            "path segment in the .vmf to `csgo_legacy/`, and the port "
+            "pipeline renames matching subdirs under the staged content "
+            "tree so the rewritten paths still resolve."
         ),
         refs=[_REF_KELLER],
     ),

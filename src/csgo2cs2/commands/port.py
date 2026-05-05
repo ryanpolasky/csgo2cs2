@@ -60,6 +60,15 @@ def register(subparsers) -> None:
             "previewing what `--auto` would change before committing."
         ),
     )
+    p.add_argument(
+        "--export-images",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Also fetch the workshop preview image + metadata.json into "
+            "<DIR>/<workshop_id>/ for reuse when re-publishing. Off by default."
+        ),
+    )
     p.set_defaults(func=run)
 
 
@@ -78,6 +87,7 @@ def run(args: argparse.Namespace) -> int:
             no_merge_instances=args.no_merge_instances,
             skip_deps=args.skip_deps,
             dry_run=args.dry_run,
+            export_images=args.export_images,
         )
     except WindowsRequiredError as exc:
         if args.skip_import:

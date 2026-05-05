@@ -33,7 +33,13 @@ class Config:
     workspace_dir: str = str(DEFAULT_WORKSPACE_DIR)
 
     # defaults applied during fixes
-    default_skybox: str = "sky_day01_01"
+    # default replacement skybox used when --fix can't find a mood-aware
+    # match. wiki-confirmed cs2 sky from
+    # https://developer.valvesoftware.com/wiki/Counter-Strike_2_Workshop_Tools/CS2_Sky_List
+    # picked for its neutral overcast lighting (brightness=0 in cs_office's
+    # documented light_environment, so it doesn't overpower the map's
+    # existing sun direction).
+    default_skybox: str = "sky_cs_office"
 
     # override the analyzer's known-good CS2 sky list. None = use built-in.
     cs2_sky_list: Optional[List[str]] = None

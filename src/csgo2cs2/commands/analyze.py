@@ -15,7 +15,15 @@ from ..analyzers.report import build_report, write_report
 from ..analyzers.vmf import analyze_vmf
 from ..config import load_config
 from ..fixers.base import apply_all
-from ..logging_utils import error, header, info, success, warn
+from ..logging_utils import (
+    error,
+    header,
+    info,
+    render_table,
+    success,
+    summary_footer,
+    warn,
+)
 
 
 def register(subparsers) -> None:
@@ -131,11 +139,10 @@ def run(args: argparse.Namespace) -> int:
     header("Findings")
     if not analysis.findings:
         success("No blocking issues detected.")
+        _print_summary({}, fixable=0, fixed=0, mode="clean")
         return 0
 
-    for f in analysis.findings:
-        marker = "[fix]" if f.fixable else "[ ]"
-        warn(f"{marker} {f.issue_id}: {f.message}")
+    _print_findings_table(analysis.findings)
 
     if args.explain:
         header("Explanations")
@@ -153,7 +160,13 @@ def run(args: argparse.Namespace) -> int:
         print()
 
     if not args.fix:
-        info("Re-run with `--fix` to apply auto-fixes for entries marked [fix].")
+        fixable_count = sum(1 for f in analysis.findings if f.fixable)
+        _print_summary(
+            _by_severity(analysis.findings),
+            fixable=fixable_count,
+            fixed=0,
+            mode="report",
+        )
         return 1
 
     header("Applying fixes" if not args.dry_run else "Computing fixes (dry run)")
@@ -196,4 +209,41 @@ def run(args: argparse.Namespace) -> int:
     for r in applied:
         success(f"{r.issue_id}: {r.detail}")
     info(f"Wrote: {out_path}")
+    _print_summary(
+        _by_severity(analysis.findings),
+        fixable=sum(1 for f in analysis.findings if f.fixable),
+        fixed=len(applied),
+        mode="fixed",
+    )
     return 0
+
+
+def _by_severity(findings) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for f in findings:
+        out[f.severity] = out.get(f.severity, 0) + 1
+    return out
+
+
+def _print_findings_table(findings) -> None:
+    rows = []
+    for f in findings:
+        marker = "yes" if f.fixable else "no"
+        rows.append([f.severity, f.issue_id, marker, f.message])
+    render_table(["severity", "issue_id", "fixable", "message"], rows)
+
+
+def _print_summary(by_severity: dict[str, int], *, fixable: int, fixed: int, mode: str) -> None:
+    extras = [("fixable", str(fixable))]
+    if mode == "fixed":
+        extras.append(("fixed", str(fixed)))
+    next_step = ""
+    if mode == "report" and fixable > 0:
+        next_step = "Re-run with `--fix` to apply auto-fixes for entries marked fixable=yes."
+    elif mode == "report" and fixable == 0:
+        next_step = (
+            "Use `csgo2cs2 explain <issue_id>` for fix instructions on the manual entries above."
+        )
+    elif mode == "fixed":
+        next_step = "Run `csgo2cs2 verify <addon>` after the cs2 import to sanity-check the result."
+    summary_footer(by_severity=by_severity, extras=extras, next_step=next_step)

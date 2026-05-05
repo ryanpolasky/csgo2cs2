@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from ..config import load_config
 from ..logging_utils import error, info, success, warn
 from ..tools.steamcmd import CSGO_APP_ID, SteamCMD
 from ..utils.paths import find_first
 from ..utils.url import parse_workshop_id
+from ..utils.workshop_meta import (
+    WorkshopMetadataError,
+    export_to,
+    fetch_metadata,
+)
 
 
 def register(subparsers) -> None:
@@ -27,7 +33,30 @@ def register(subparsers) -> None:
         default=None,
         help="Steam login username (overrides config). Anonymous if unset.",
     )
+    p.add_argument(
+        "--export-images",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Also fetch the workshop preview image + metadata.json into "
+            "<DIR>/<workshop_id>/ for reuse when re-publishing. Off by default."
+        ),
+    )
     p.set_defaults(func=run)
+
+
+# fetch + export workshop preview/metadata. soft-fails (warn instead of
+# error) so a flaky Steam web call doesn't kill the actual map download.
+def _maybe_export_images(workshop_id: str, out_dir: str) -> None:
+    info(f"Fetching workshop metadata for {workshop_id}...")
+    try:
+        meta = fetch_metadata(workshop_id)
+        target = export_to(meta, Path(out_dir).expanduser())
+    except WorkshopMetadataError as exc:
+        warn(f"workshop image export skipped: {exc}")
+        return
+    title = meta.title or "<no title>"
+    success(f"Exported workshop images: {target}/  ({title})")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -68,6 +97,8 @@ def run(args: argparse.Namespace) -> int:
             success(f"Downloaded: {bsp}")
         else:
             warn(f"Workshop folder exists but no .bsp found: {expected}")
+        if args.export_images:
+            _maybe_export_images(workshop_id, args.export_images)
         return 0
 
     error(

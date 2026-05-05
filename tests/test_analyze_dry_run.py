@@ -64,9 +64,10 @@ def test_dry_run_prints_unified_diff(tmp_path: Path, capsys) -> None:
     assert "---" in out
     assert "+++" in out
     assert "@@" in out
-    # the actual change: skybox swap
+    # the actual change: skybox swap. `sky_dust2` trips the smart-skybox
+    # mood rule for "dust2" -> wiki-confirmed `sky_de_dust2`.
     assert "sky_dust2" in out  # in the - line
-    assert "sky_day01_01" in out  # in the + line
+    assert "sky_de_dust2" in out  # in the + line
 
 
 def test_dry_run_without_fix_is_a_noop_path(tmp_path: Path) -> None:

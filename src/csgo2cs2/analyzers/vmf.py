@@ -7,12 +7,37 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-# known cs2 skyboxes used as safe replacements. covers the official cs2 ship-in
-# set; not exhaustive of community skies. override via Config.cs2_sky_list.
-KNOWN_CS2_SKIES: Set[str] = {
-    "sky_day01_01",
+# wiki-confirmed cs2 skies, as documented at
+# https://developer.valvesoftware.com/wiki/Counter-Strike_2_Workshop_Tools/CS2_Sky_List
+# the wiki page is marked WIP so this is the documented subset, not
+# necessarily the entire shipped sky set. each entry is the skybox material
+# (env_sky) name from a shipping cs2 map.
+WIKI_CONFIRMED_CS2_SKIES: Set[str] = {
+    "s2_de_inferno_sky01",  # de_inferno (mediterranean / coastal)
+    "sky_de_mirage",  # de_mirage (desert / arabian)
+    "sky_de_annubis",  # de_anubis (egyptian / desert) — note the wiki spelling
+    "sky_de_vertigo",  # de_vertigo (urban high-altitude)
+    "sky_de_nuke",  # de_nuke (industrial / cloudy)
+    "sky_cs_office",  # cs_office (overcast urban)
+    "cs_italy_s2_skybox_2",  # cs_italy (italian / mediterranean)
+    "sky_hr_aztec_02_lighting",  # de_ancient (jungle / temple)
+    "sky_de_dust2",  # de_dust2 (desert)
+    "sky_de_overpass_01",  # de_overpass (european urban)
+}
+
+# legacy / unverified skies kept in `KNOWN_CS2_SKIES` for backward
+# compatibility with users who configured `cs2_sky_list` against earlier
+# versions of csgo2cs2 (pre-PR5). these names were ported from csgo and
+# may or may not actually exist in cs2; we don't shrink the set so we
+# don't surface false-positive `skybox_unknown` findings on configs that
+# previously passed clean.
+#
+# `sky_day01_01` was the old default_skybox value and is intentionally
+# omitted: it doesn't appear in the wiki sky list nor in any csgo sky
+# manifest we can find. the new default is `sky_cs_office`.
+LEGACY_UNVERIFIED_SKIES: Set[str] = {
     "sky_csgo_cloudy01",
     "sky_csgo_night02",
     "sky_csgo_night02b",
@@ -23,6 +48,11 @@ KNOWN_CS2_SKIES: Set[str] = {
     "sky_urb_embassy01",
     "sky_venice",
 }
+
+# the union is what `analyze` accepts as a "known" sky. if a vmf already
+# names one of these, we don't flag `skybox_unknown`. override via
+# Config.cs2_sky_list.
+KNOWN_CS2_SKIES: Set[str] = WIKI_CONFIRMED_CS2_SKIES | LEGACY_UNVERIFIED_SKIES
 
 # csgo skies that are HDR-only (no LDR fallback) historically caused the
 # importer to fail. flagging them separately so users get a targeted message.
@@ -36,6 +66,70 @@ HDR_ONLY_SKIES: Set[str] = {
     "sky_office_hdr",
     "sky_baggage_hdr",
 }
+
+# mood-aware skybox replacement table. matched as substrings against the
+# original csgo skyname (case-insensitive). first hit wins, top-down. used
+# by the skybox fixer so a `de_dust2_redux` map gets a desert sky and a
+# `cs_office_remix` map gets the cs office sky, instead of everything
+# ending up under the same `default_skybox` value.
+#
+# IMPORTANT: every replacement here MUST be in WIKI_CONFIRMED_CS2_SKIES.
+# unverified csgo-era sky names (sky_day01_01, sky_dust, etc.) are kept in
+# the LEGACY_UNVERIFIED_SKIES set for backward compat but never used as
+# auto-replacements, since we can't be sure they ship with cs2.
+#
+# moods with no clean wiki match (snow, night, rural) intentionally fall
+# through to default_skybox rather than picking a random urban sky.
+SKY_MOOD_RULES: List[Tuple[str, str]] = [
+    # csgo desert maps (de_dust2 / similar) -> cs2 dust2 sky
+    ("dust2", "sky_de_dust2"),
+    ("dust_", "sky_de_dust2"),
+    ("dust.", "sky_de_dust2"),
+    # arabian / mirage-style
+    ("mirage", "sky_de_mirage"),
+    ("arabia", "sky_de_mirage"),
+    ("desert", "sky_de_mirage"),
+    ("sahara", "sky_de_mirage"),
+    # egyptian / anubis temple
+    ("anubis", "sky_de_annubis"),
+    ("annubis", "sky_de_annubis"),  # csgo mis-spelling carries through
+    ("egypt", "sky_de_annubis"),
+    ("pharaoh", "sky_de_annubis"),
+    # mediterranean / coastal -> inferno sky
+    ("inferno", "s2_de_inferno_sky01"),
+    ("coast", "s2_de_inferno_sky01"),
+    ("mediterranean", "s2_de_inferno_sky01"),
+    # italian -> cs_italy sky
+    ("italy", "cs_italy_s2_skybox_2"),
+    ("italia", "cs_italy_s2_skybox_2"),
+    # european urban (overpass-style)
+    ("overpass", "sky_de_overpass_01"),
+    ("euro", "sky_de_overpass_01"),
+    # office / embassy / interior overcast urban
+    ("office", "sky_cs_office"),
+    ("embassy", "sky_cs_office"),
+    ("station", "sky_cs_office"),
+    # urban / city -> cs2 high-altitude vertigo sky
+    ("vertigo", "sky_de_vertigo"),
+    ("downtown", "sky_de_vertigo"),
+    ("urban", "sky_de_vertigo"),
+    ("urb_", "sky_de_vertigo"),
+    ("alley", "sky_de_vertigo"),
+    ("city", "sky_de_vertigo"),
+    # industrial / nuke
+    ("nuke", "sky_de_nuke"),
+    ("industrial", "sky_de_nuke"),
+    ("factory", "sky_de_nuke"),
+    # jungle / temple / aztec / ancient
+    ("aztec", "sky_hr_aztec_02_lighting"),
+    ("ancient", "sky_hr_aztec_02_lighting"),
+    ("jungle", "sky_hr_aztec_02_lighting"),
+    ("temple", "sky_hr_aztec_02_lighting"),
+    ("ruins", "sky_hr_aztec_02_lighting"),
+    # NOTE: night / snow / rural / forest moods have no documented cs2 sky
+    # equivalent. we let them fall through to cfg.default_skybox rather
+    # than mapping them to an obviously-wrong daytime sky.
+]
 
 # source 1 entities that don't survive the cs2 import cleanly.
 # additive: cfg.extra_unsupported_entities is merged at analyze-time.
@@ -206,10 +300,21 @@ def _is_tools_clip(path: str) -> bool:
     return any(norm.startswith(p) for p in _TOOLS_CLIP_PREFIXES)
 
 
+# pick a mood-aware cs2 replacement for a csgo sky name. returns the user's
+# default_skybox unchanged when no mood rule matches. exported because the
+# fixer + tests + the explain registry all need to agree on the mapping.
+def pick_smart_skybox(skyname: str, default_skybox: str = "sky_cs_office") -> str:
+    s = (skyname or "").lower()
+    for needle, replacement in SKY_MOOD_RULES:
+        if needle in s:
+            return replacement
+    return default_skybox
+
+
 # run every vmf check we currently support.
 def analyze_vmf(
     text: str,
-    default_skybox: str = "sky_day01_01",
+    default_skybox: str = "sky_cs_office",
     cs2_sky_list: Optional[Iterable[str]] = None,
     extra_unsupported_entities: Optional[Iterable[str]] = None,
 ) -> VmfAnalysis:
@@ -222,6 +327,7 @@ def analyze_vmf(
     if sky_match:
         skyname = sky_match.group(1)
         analysis.skyname = skyname
+        smart = pick_smart_skybox(skyname, default_skybox=default_skybox)
         if skyname in HDR_ONLY_SKIES:
             analysis.findings.append(
                 Finding(
@@ -232,7 +338,11 @@ def analyze_vmf(
                         "without an LDR fallback. Replace with a known cs2 sky."
                     ),
                     fixable=True,
-                    context={"current": skyname, "replacement": default_skybox},
+                    context={
+                        "current": skyname,
+                        "replacement": smart,
+                        "default": default_skybox,
+                    },
                 )
             )
         elif skyname not in skies:
@@ -242,7 +352,11 @@ def analyze_vmf(
                     severity="warn",
                     message=f"Skybox `{skyname}` is not a known CS2 sky.",
                     fixable=True,
-                    context={"current": skyname, "replacement": default_skybox},
+                    context={
+                        "current": skyname,
+                        "replacement": smart,
+                        "default": default_skybox,
+                    },
                 )
             )
     else:
@@ -428,7 +542,7 @@ def analyze_vmf(
                         "importer special-cases that name and may resolve assets to "
                         "the install dir instead of yours."
                     ),
-                    fixable=False,
+                    fixable=True,  # PR5: bulk-rename to `csgo_legacy/`
                     context={"path": ref},
                 )
             )

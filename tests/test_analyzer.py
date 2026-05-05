@@ -44,19 +44,20 @@ def test_known_cs2_sky_produces_no_skybox_finding():
 
 
 def test_unknown_sky_is_flagged_and_fixable():
+    # sky name with no mood match -> replacement falls back to default.
     text = _vmf(sky="sky_csgo_someoldsky")
-    a = analyze_vmf(text, default_skybox="sky_day01_01")
+    a = analyze_vmf(text, default_skybox="sky_cs_office")
     sky_findings = [f for f in a.findings if f.issue_id == "skybox_unknown"]
     assert len(sky_findings) == 1
     f = sky_findings[0]
     assert f.fixable
     assert f.context["current"] == "sky_csgo_someoldsky"
-    assert f.context["replacement"] == "sky_day01_01"
+    assert f.context["replacement"] == "sky_cs_office"
 
 
 def test_hdr_only_sky_produces_dedicated_error_finding():
     text = _vmf(sky="sky_office_hdr")
-    a = analyze_vmf(text, default_skybox="sky_day01_01")
+    a = analyze_vmf(text, default_skybox="sky_cs_office")
     hdr = [f for f in a.findings if f.issue_id == "skybox_hdr_only"]
     assert len(hdr) == 1
     assert hdr[0].severity == "error"
@@ -157,7 +158,7 @@ def test_missing_required_spawns_flagged():
 world
 {
 \t"classname" "worldspawn"
-\t"skyname" "sky_day01_01"
+\t"skyname" "sky_cs_office"
 }
 """
     a = analyze_vmf(text)
