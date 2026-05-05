@@ -16,7 +16,7 @@ from ..tools.bspsource import BSPSource
 from ..tools.bspzip import BSPZip
 from ..tools.steamcmd import SteamCMD
 from ..tools.vpkedit import VPKEdit
-from ..utils.backup import backup_file, has_marker
+from ..utils.backup import backup_file, backup_path_for, has_marker, restore_file
 from ..utils.steam import find_csgo_install
 
 DECODE_MARKER = ".decode("
@@ -31,6 +31,15 @@ def register(subparsers) -> None:
         "--fix",
         action="store_true",
         help="Apply known reversible install patches with backups.",
+    )
+    p.add_argument(
+        "--unfix",
+        action="store_true",
+        help=(
+            "Reverse `--fix` mutations: restore the original "
+            "import_map_community.py and rename vpk.signatures.old back "
+            "to vpk.signatures so VAC-protected servers accept the install."
+        ),
     )
     p.set_defaults(func=run)
 
@@ -57,6 +66,13 @@ def run(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     issues: List[str] = []
     fixes_applied: List[str] = []
+
+    if args.fix and args.unfix:
+        error("--fix and --unfix are mutually exclusive.")
+        return 2
+
+    if args.unfix:
+        return _run_unfix(cfg)
 
     header("Environment")
     info(f"OS: {os_label()}")
@@ -112,6 +128,8 @@ def run(args: argparse.Namespace) -> int:
 
     header("Install Patches")
     _check_install_patches(cfg, args.fix, issues, fixes_applied)
+    if not args.fix:
+        info("Tip: `csgo2cs2 doctor --unfix` reverses these patches before going to VAC servers.")
 
     header("Summary")
     if fixes_applied:
@@ -187,6 +205,93 @@ def _patch_remove_decode(path: Path) -> None:
         else:
             out_lines.append(line)
     path.write_text("".join(out_lines), encoding="utf-8")
+
+
+# reverse the install-side mutations made by `doctor --fix`. each unfix step is
+# best-effort and idempotent: missing backups / already-restored state are not
+# errors. we want users heading to VAC servers to be able to run this without
+# having to remember which fixes were applied.
+def _run_unfix(cfg) -> int:
+    header("Reversing install patches")
+    if not cfg.csgo_install_path:
+        error("csgo_install_path not set; nothing to unfix.")
+        return 1
+
+    install = Path(cfg.csgo_install_path)
+    reversed_count = 0
+    skipped: List[str] = []
+
+    # 1. restore import_map_community.py from its backup if one exists.
+    importer_candidates = [
+        install / "game" / "csgo" / "scripts" / "import_map_community.py",
+        install / "game" / "bin" / "win64" / "import_map_community.py",
+    ]
+    importer = next((p for p in importer_candidates if p.exists()), None)
+    if importer is None:
+        # the backup may still exist even if the patched file is gone (rare).
+        for cand in importer_candidates:
+            if backup_path_for(cand).exists():
+                importer = cand
+                break
+
+    if importer is None:
+        skipped.append("import_map_community.py: not found in any expected location")
+    else:
+        backup = backup_path_for(importer)
+        if backup.exists():
+            if restore_file(importer):
+                # remove the backup once we've successfully restored from it,
+                # so a future --fix starts from a clean tree.
+                backup.unlink()
+                success(f"restored {importer} from backup")
+                reversed_count += 1
+            else:
+                warn(f"failed to restore {importer} (backup unreadable?)")
+        else:
+            skipped.append(
+                f"{importer.name}: no backup at {backup.name}; "
+                "either --fix was never run or the backup was deleted"
+            )
+
+    # 2. rename vpk.signatures.old -> vpk.signatures, removing any backup.
+    if cfg.cs2_bin_path:
+        sigs = Path(cfg.cs2_bin_path) / "vpk.signatures"
+        renamed = sigs.with_suffix(sigs.suffix + ".old")
+        if renamed.exists():
+            if sigs.exists():
+                # both present: keep the live one, drop the .old. uncommon but
+                # possible if the user manually restored or steam shipped a new copy.
+                renamed.unlink()
+                info(f"vpk.signatures already present; removed stale {renamed.name}")
+            else:
+                renamed.rename(sigs)
+                success(f"renamed {renamed.name} -> {sigs.name}")
+                reversed_count += 1
+            # clean up any backup we wrote alongside the original rename.
+            backup = backup_path_for(sigs)
+            if backup.exists():
+                backup.unlink()
+        elif sigs.exists():
+            skipped.append("vpk.signatures: already in place; nothing to reverse")
+        else:
+            skipped.append(
+                "vpk.signatures: neither vpk.signatures nor vpk.signatures.old "
+                "exists at the configured cs2_bin_path"
+            )
+    else:
+        skipped.append("vpk.signatures: cs2_bin_path not set")
+
+    header("Summary")
+    if reversed_count:
+        success(f"Reversed {reversed_count} install patch(es).")
+        info("Your install should now pass VAC checks again.")
+    else:
+        warn("No install patches were reversed.")
+    for s in skipped:
+        info(s)
+    # unfix is idempotent: skipped steps are not failures. exit 0 always so
+    # users can chain it (e.g. `csgo2cs2 doctor --unfix && cs2.exe`).
+    return 0
 
 
 # strip one `.decode(...)` call from a line.

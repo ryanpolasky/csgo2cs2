@@ -84,13 +84,17 @@ csgo2cs2 tools install bspsource --force        # re-download a single tool
 csgo2cs2 tools list                             # show installed tool paths
 csgo2cs2 doctor                                 # check tools and prereqs
 csgo2cs2 doctor --fix                           # apply install patches with backups
+csgo2cs2 doctor --unfix                         # reverse install patches (VAC-safe)
 csgo2cs2 download "<workshop-url-or-id>"        # download via steamcmd
 csgo2cs2 decompile <bsp-path>                   # bspsource decompile
 csgo2cs2 analyze <vmf-path>                     # report vmf issues
 csgo2cs2 analyze <vmf-path> --fix               # apply auto-fixes (skybox, entities)
 csgo2cs2 analyze <vmf-path> --bsp <bsp-path>    # also include bsp header + pakfile audit
+csgo2cs2 analyze <vmf-path> --explain           # print curated what/why/fix per finding
 csgo2cs2 analyze <vmf-path> --report-json       # machine-readable findings on stdout
 csgo2cs2 analyze <vmf-path> --report-json out.json  # write findings to a file
+csgo2cs2 explain <issue_id>                     # standalone explanation for one finding
+csgo2cs2 explain --list                         # list every issue_id with a curated entry
 csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --auto   # full pipeline (windows)
 csgo2cs2 port --bsp ./local.bsp --addon my_addon --auto        # skip steamcmd, use a local file
 csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --skip-import   # cross-os dry run
@@ -105,31 +109,92 @@ csgo2cs2 cleanup "<workshop-url-or-id>" --dry-run
 `csgo2cs2 analyze` reports issues by `issue_id` so they're easy to grep / pipe
 into `jq` via `--report-json`. Current set:
 
-| issue_id                  | severity | fixable | when                                                        |
-| ------------------------- | -------- | ------- | ----------------------------------------------------------- |
-| `skybox_hdr_only`         | error    | yes     | skyname is in the curated HDR-only list (importer fails)    |
-| `skybox_unknown`          | warn     | yes     | skyname isn't in `KNOWN_CS2_SKIES` (or `cfg.cs2_sky_list`)  |
-| `skybox_missing`          | warn     | no      | no `skyname` key in worldspawn                              |
-| `entity_unsupported`      | warn     | yes     | classname is in `UNSUPPORTED_ENTITIES` + extras from config |
-| `entity_legacy_spawn`     | warn     | no      | DOD-era / Source 1 spawns instead of CS2 team spawns        |
-| `missing_spawn`           | warn     | no      | no `info_player_terrorist` or `info_player_counterterrorist`|
-| `asset_path_space`        | error    | no      | a material/model path contains a space                      |
-| `asset_path_absolute`     | error    | no      | a material/model path uses a Windows drive letter           |
-| `asset_path_backslash`    | warn     | no      | a material/model path uses backslashes                      |
+| issue_id                    | severity | fixable | when                                                                       |
+|-----------------------------|----------|---------|----------------------------------------------------------------------------|
+| `skybox_hdr_only`           | error    | yes     | skyname is in the curated HDR-only list (importer fails)                   |
+| `skybox_unknown`            | warn     | yes     | skyname isn't in `KNOWN_CS2_SKIES` (or `cfg.cs2_sky_list`)                 |
+| `skybox_missing`            | warn     | no      | no `skyname` key in worldspawn                                             |
+| `entity_unsupported`        | warn     | yes     | classname is in `UNSUPPORTED_ENTITIES` + extras from config                |
+| `entity_legacy_spawn`       | warn     | no      | DOD-era / Source 1 spawns instead of CS2 team spawns                       |
+| `entity_deprecated_s2`      | info     | no      | classname has no Source 2 equivalent (areaportal, fog_controller, etc.)    |
+| `missing_spawn`             | warn     | no      | no `info_player_terrorist` or `info_player_counterterrorist`               |
+| `light_environment_count`   | warn     | no      | more than one `light_environment` (cs2 expects exactly one)                |
+| `texture_clip_custom`       | warn     | no      | custom clip texture (importer drops anything outside `tools/toolsclip*`)   |
+| `asset_path_space`          | error    | no      | a material/model path contains a space                                     |
+| `asset_path_absolute`       | error    | no      | a material/model path uses a Windows drive letter                          |
+| `asset_path_backslash`      | warn     | no      | a material/model path uses backslashes                                     |
+| `asset_path_csgo_subfolder` | warn     | no      | a material/model path lives under a folder literally named `csgo/`         |
+| `manual_rebuild_cubemaps`   | info     | no      | env_cubemap entities or pakfile cubemap assets present (run buildcubemaps) |
+| `manual_review_soundscapes` | info     | no      | soundscape/ambient entities or `scripts/soundscapes_*.txt` in pakfile      |
+| `manual_review_overlays`    | info     | no      | `info_overlay` entities (UVs re-bake during import)                        |
+| `manual_rebuild_nav`        | info     | no      | `.nav` file in bsp pakfile (cs2 nav format differs)                        |
+| `manual_rebuild_radar`      | info     | no      | `resource/overviews/<map>_radar.*` in bsp pakfile                          |
+| `pakfile_scripts`           | warn     | no      | `.lua`/`.nut` scripts embedded (cs2 vscript surface differs)               |
+| `pakfile_csgo_subfolder`    | warn     | no      | bsp pakfile contains assets under `materials/csgo/`                        |
+| `bsp_invalid_header`        | error    | no      | file isn't a Source 1 .bsp (no `VBSP` magic)                               |
+| `bsp_protected`             | error    | no      | bsp shows a known anti-decompile marker                                    |
+| `pakfile_error`             | warn     | no      | embedded pakfile lump is unreadable                                        |
 
 The JSON report includes a `summary` block with counts per severity plus a
 `fixable` count, so CI scripts can fail on `summary.error > 0`.
+
+`csgo2cs2 explain <issue_id>` prints a curated *what / why / how-to-fix* block
+for each id; `csgo2cs2 analyze --explain` does the same inline for every
+finding the analyzer surfaced. The text is offline and deterministic — see
+[Prior art & attributions](#prior-art--attributions) for the source material.
 
 ## Known Limitations
 
 - **windows-only `port`.** decompile fidelity is bounded by BSPSource: brushwork,
   displacements, and area portals are imperfectly recovered.
 - **`bspProtect`-protected maps** cannot be decompiled cleanly; the analyzer
-  flags these.
+  flags these (`bsp_protected`).
 - **nav meshes, radar, soundscapes, cubemaps, and lighting** do not transfer
-  cleanly and need to be regenerated in Hammer 2.
+  cleanly and need to be regenerated in Hammer 2 — the analyzer surfaces this
+  as `manual_rebuild_*` / `manual_review_*` info findings when it can detect
+  the relevant entities or pakfile contents.
 - **anonymous steamcmd downloads** for app `730` are unreliable; an authenticated
   Steam login may be required.
+
+## VAC safety
+
+Running on a VAC server with the install patches applied is **not recommended**
+— Valve hasn't published a stance on the modified `import_map_community.py`
+or the renamed `vpk.signatures`, but anything that touches files under
+`game/bin/win64/` is the kind of thing VAC may flag in the future. The simplest
+guarantee is to reverse them when you're done porting:
+
+```bash
+csgo2cs2 doctor --unfix    # restores import_map_community.py and renames
+                           # vpk.signatures.old back to vpk.signatures
+```
+
+The reverse uses the `.csgo2cs2.bak` files written during `--fix`. If those
+backups are gone (e.g. you've nuked the directory), `--unfix` reports what it
+couldn't reverse and exits 0 anyway so you can chain it (`doctor --unfix && cs2.exe`).
+
+## Prior art & attributions
+
+This project stands on the shoulders of community work. In particular:
+
+- **[andreaskeller96/cs2-import-scripts](https://github.com/andreaskeller96/cs2-import-scripts)**
+  — the canonical Python 3 port of Valve's official `import_map_community.py`,
+  with the de-facto pitfall list for csgo→cs2 imports. csgo2cs2's HDR sky
+  detection, asset-path checks (spaces / drive-letter / backslash / `csgo/`
+  subfolder), custom-clip-texture detection, and the `--unfix` patch list are
+  all derived from that project's README and source. We use the upstream script
+  directly when the user opts into `csgo2cs2 tools install import_map_community`.
+- **[ata4/bspsrc](https://github.com/ata4/bspsrc)** (BSPSource) — the .bsp →
+  .vmf decompiler that csgo2cs2 wraps. The `entity_deprecated_s2` set
+  (`func_areaportal`, `func_viscluster`, `info_no_dynamic_shadow`, etc.) traces
+  back to BSPSource's "Limitations and known bugs" notes about which entities
+  vbsp consumes and can't be perfectly restored.
+- **Valve** — `import_map_community.py` itself is Valve's official import
+  script. csgo2cs2's role is only to scaffold setup, surface the same pitfalls
+  earlier, and orchestrate the pipeline.
+
+If you spot prior art we should credit (or a mistake in how we're crediting
+something here), please open a PR.
 
 ## Layout
 
@@ -148,6 +213,7 @@ src/csgo2cs2/
     download.py
     decompile.py
     analyze.py
+    explain_cmd.py
     port.py
     list_cmd.py
     status_cmd.py
@@ -161,8 +227,9 @@ src/csgo2cs2/
     import_map.py
   analyzers/             # pure-python analysis
     vmf.py               # vmf text analysis -> findings
-    bsp.py               # bsp header + protection sniff + pakfile inventory
+    bsp.py               # bsp header + protection sniff + pakfile inventory + findings
     report.py            # structured json report builder
+    explain.py           # curated what/why/fix registry per issue_id
   fixers/                # registered auto-fixers
     base.py              # registry + apply_all
     skybox.py

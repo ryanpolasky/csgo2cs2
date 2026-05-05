@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 
 from .. import fixers  # noqa: F401  (registers fixers on import)
-from ..analyzers.bsp import inspect_bsp
+from ..analyzers import explain as explain_mod
+from ..analyzers.bsp import analyze_bsp_findings, inspect_bsp
 from ..analyzers.report import build_report, write_report
 from ..analyzers.vmf import analyze_vmf
 from ..config import load_config
@@ -49,6 +50,11 @@ def register(subparsers) -> None:
             "with a path, writes there."
         ),
     )
+    p.add_argument(
+        "--explain",
+        action="store_true",
+        help="After listing findings, print a curated what/why/fix block per issue_id.",
+    )
     p.set_defaults(func=run)
 
 
@@ -74,6 +80,8 @@ def run(args: argparse.Namespace) -> int:
             error(f"BSP not found: {bsp_path}")
             return 2
         bsp_info = inspect_bsp(bsp_path)
+        # bsp findings join the vmf findings list so report/explain handle them.
+        analysis.findings.extend(analyze_bsp_findings(bsp_info))
 
     if args.report_json is not None:
         report = build_report(
@@ -119,6 +127,21 @@ def run(args: argparse.Namespace) -> int:
     for f in analysis.findings:
         marker = "[fix]" if f.fixable else "[ ]"
         warn(f"{marker} {f.issue_id}: {f.message}")
+
+    if args.explain:
+        header("Explanations")
+        seen: set[str] = set()
+        for f in analysis.findings:
+            if f.issue_id in seen:
+                continue
+            seen.add(f.issue_id)
+            exp = explain_mod.get(f.issue_id)
+            if exp is None:
+                info(f"{f.issue_id}: (no curated explanation; message: {f.message})")
+                continue
+            print()
+            print(explain_mod.render(exp))
+        print()
 
     if not args.fix:
         info("Re-run with `--fix` to apply auto-fixes for entries marked [fix].")
