@@ -253,3 +253,204 @@ def test_finding_to_dict_round_trip():
     # findings serialize to dicts with all required keys
     for f in d["findings"]:
         assert {"issue_id", "severity", "message", "fixable", "context"} <= set(f.keys())
+
+
+# ---------------------------------------------------------------------------
+# pr3 pitfall coverage
+# ---------------------------------------------------------------------------
+
+
+def test_deprecated_s2_entity_func_areaportal_flagged_info():
+    extra = """\
+entity
+{
+\t"id" "70"
+\t"classname" "func_areaportal"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    dep = [
+        f
+        for f in a.findings
+        if f.issue_id == "entity_deprecated_s2" and f.context.get("classname") == "func_areaportal"
+    ]
+    assert len(dep) == 1
+    assert dep[0].severity == "info"
+    assert dep[0].fixable is False
+
+
+def test_color_correction_volume_flagged_deprecated():
+    extra = """\
+entity
+{
+\t"id" "71"
+\t"classname" "color_correction_volume"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    assert any(
+        f.issue_id == "entity_deprecated_s2"
+        and f.context.get("classname") == "color_correction_volume"
+        for f in a.findings
+    )
+
+
+def test_env_cubemap_emits_manual_rebuild_cubemaps_once():
+    extra = """\
+entity
+{
+\t"id" "80"
+\t"classname" "env_cubemap"
+}
+entity
+{
+\t"id" "81"
+\t"classname" "env_cubemap"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    rebuild = [f for f in a.findings if f.issue_id == "manual_rebuild_cubemaps"]
+    assert len(rebuild) == 1  # deduped per category
+    assert rebuild[0].severity == "info"
+
+
+def test_soundscape_entities_emit_manual_review_soundscapes():
+    extra = """\
+entity
+{
+\t"id" "82"
+\t"classname" "env_soundscape"
+}
+entity
+{
+\t"id" "83"
+\t"classname" "ambient_generic"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    rebuild = [f for f in a.findings if f.issue_id == "manual_review_soundscapes"]
+    assert len(rebuild) == 1
+
+
+def test_info_overlay_emits_manual_review_overlays():
+    extra = """\
+entity
+{
+\t"id" "84"
+\t"classname" "info_overlay"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    assert any(f.issue_id == "manual_review_overlays" for f in a.findings)
+
+
+def test_multiple_light_environment_flagged():
+    extra = """\
+entity
+{
+\t"id" "90"
+\t"classname" "light_environment"
+}
+entity
+{
+\t"id" "91"
+\t"classname" "light_environment"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    le = [f for f in a.findings if f.issue_id == "light_environment_count"]
+    assert len(le) == 1
+    assert le[0].context["count"] == 2
+
+
+def test_single_light_environment_not_flagged():
+    extra = """\
+entity
+{
+\t"id" "92"
+\t"classname" "light_environment"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    assert not any(f.issue_id == "light_environment_count" for f in a.findings)
+
+
+def test_custom_clip_texture_flagged():
+    extra = """\
+entity
+{
+\t"id" "100"
+\t"classname" "func_brush"
+\t"material" "myproj/customclip"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    clip = [f for f in a.findings if f.issue_id == "texture_clip_custom"]
+    assert len(clip) == 1
+    assert clip[0].context["path"] == "myproj/customclip"
+
+
+def test_tools_clip_texture_not_flagged():
+    extra = """\
+entity
+{
+\t"id" "101"
+\t"classname" "func_brush"
+\t"material" "tools/toolsclip"
+}
+entity
+{
+\t"id" "102"
+\t"classname" "func_brush"
+\t"material" "tools/toolsplayerclip"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    assert not any(f.issue_id == "texture_clip_custom" for f in a.findings)
+
+
+def test_csgo_subfolder_in_asset_path_flagged_once():
+    extra = """\
+entity
+{
+\t"id" "110"
+\t"classname" "func_brush"
+\t"material" "models/csgo/de_dust2/wall.vmt"
+}
+entity
+{
+\t"id" "111"
+\t"classname" "func_brush"
+\t"material" "materials/csgo/something_else.vmt"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    sub = [f for f in a.findings if f.issue_id == "asset_path_csgo_subfolder"]
+    # we emit a single category-level finding to avoid noise
+    assert len(sub) == 1
+
+
+def test_no_csgo_subfolder_when_csgo_appears_only_in_filename():
+    # "csgo" embedded in a file/folder name but not as a directory segment
+    # should NOT trigger the finding.
+    extra = """\
+entity
+{
+\t"id" "112"
+\t"classname" "func_brush"
+\t"material" "models/cs_go_props/wall.vmt"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    assert not any(f.issue_id == "asset_path_csgo_subfolder" for f in a.findings)

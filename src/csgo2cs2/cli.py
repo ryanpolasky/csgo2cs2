@@ -12,6 +12,7 @@ from .commands import cleanup as cmd_cleanup
 from .commands import decompile as cmd_decompile
 from .commands import doctor as cmd_doctor
 from .commands import download as cmd_download
+from .commands import explain_cmd as cmd_explain
 from .commands import init_cmd as cmd_init
 from .commands import list_cmd as cmd_list
 from .commands import port as cmd_port
@@ -49,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_download.register(sub)
     cmd_decompile.register(sub)
     cmd_analyze.register(sub)
+    cmd_explain.register(sub)
     cmd_port.register(sub)
     cmd_list.register(sub)
     cmd_status.register(sub)

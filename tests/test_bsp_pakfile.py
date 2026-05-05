@@ -9,6 +9,7 @@ import zipfile
 from csgo2cs2.analyzers.bsp import (
     LUMP_PAKFILE,
     PROTECTION_MARKERS,
+    analyze_bsp_findings,
     filter_interesting,
     inspect_bsp,
 )
@@ -111,3 +112,69 @@ def test_inspect_bsp_invalid_header(tmp_path):
     # we don't try to parse the pakfile when the header is invalid
     assert info.pakfile_count == 0
     assert info.pakfile_entries == []
+
+
+# ---------------------------------------------------------------------------
+# pr3: bsp pakfile -> findings
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_bsp_findings_invalid_header_emits_error(tmp_path):
+    bsp = tmp_path / "bad.bsp"
+    bsp.write_bytes(b"NOPE" + b"\x00" * 100)
+    info = inspect_bsp(bsp)
+    findings = analyze_bsp_findings(info)
+    ids = [f.issue_id for f in findings]
+    assert ids == ["bsp_invalid_header"]
+    assert findings[0].severity == "error"
+
+
+def test_analyze_bsp_findings_protected_emits_finding(tmp_path):
+    bsp = tmp_path / "protected.bsp"
+    bsp.write_bytes(
+        b"VBSP" + struct.pack("<i", 21) + b"\x00" * 100 + PROTECTION_MARKERS[0] + b"\x00" * 1000
+    )
+    info = inspect_bsp(bsp)
+    findings = analyze_bsp_findings(info)
+    assert any(f.issue_id == "bsp_protected" for f in findings)
+
+
+def test_analyze_bsp_findings_emits_nav_radar_soundscape_lua_csgo(tmp_path):
+    blob = _zip_blob(
+        {
+            "maps/de_dust2.nav": b"nav",
+            "resource/overviews/de_dust2_radar.dds": b"radar",
+            "scripts/soundscapes_de_dust2.txt": b"soundscape",
+            "scripts/vscripts/foo.nut": b"squirrel",
+            "scripts/vscripts/bar.lua": b"lua",
+            "materials/csgo/de_dust2/wall.vmt": b"vmt",
+            "materials/maps/cubemap_001.hdr.vtf": b"cube",
+        }
+    )
+    bsp = tmp_path / "rich.bsp"
+    _write_synthetic_bsp(bsp, blob)
+    info = inspect_bsp(bsp)
+    findings = analyze_bsp_findings(info)
+    ids = {f.issue_id for f in findings}
+    assert {
+        "manual_rebuild_nav",
+        "manual_rebuild_radar",
+        "manual_review_soundscapes",
+        "pakfile_scripts",
+        "pakfile_csgo_subfolder",
+        "manual_rebuild_cubemaps",
+    }.issubset(ids)
+
+
+def test_analyze_bsp_findings_clean_pakfile_emits_no_findings(tmp_path):
+    blob = _zip_blob(
+        {
+            "materials/maps/dust2/floor.vmt": b"vmt",
+            "models/de_dust2/box.mdl": b"mdl",
+        }
+    )
+    bsp = tmp_path / "clean.bsp"
+    _write_synthetic_bsp(bsp, blob)
+    info = inspect_bsp(bsp)
+    findings = analyze_bsp_findings(info)
+    assert findings == []

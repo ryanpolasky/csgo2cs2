@@ -157,3 +157,152 @@ def filter_interesting(entries: List[PakEntry]) -> List[PakEntry]:
     return [
         e for e in entries if any(e.name.lower().endswith(ext) for ext in _INTERESTING_EXTENSIONS)
     ]
+
+
+# turn a BspInfo into vmf-style Findings so the analyze command can surface
+# bsp-side pitfalls in the same flow. imported lazily to avoid a circular
+# import (vmf.py imports nothing from bsp; we mirror that direction here).
+def analyze_bsp_findings(info: BspInfo) -> List[object]:
+    from .vmf import Finding  # local import keeps vmf.py the canonical Finding home
+
+    findings: List[Finding] = []
+
+    if not info.valid_header:
+        findings.append(
+            Finding(
+                issue_id="bsp_invalid_header",
+                severity="error",
+                message=f"`{info.path.name}` does not start with VBSP magic; not a Source 1 bsp.",
+                fixable=False,
+                context={"path": str(info.path)},
+            )
+        )
+        return findings
+
+    if info.suspected_protected:
+        findings.append(
+            Finding(
+                issue_id="bsp_protected",
+                severity="error",
+                message=(
+                    f"`{info.path.name}` shows a `{info.detected_marker}` marker; "
+                    "decompile may fail or produce broken geometry."
+                ),
+                fixable=False,
+                context={"marker": info.detected_marker},
+            )
+        )
+
+    if info.pakfile_error:
+        findings.append(
+            Finding(
+                issue_id="pakfile_error",
+                severity="warn",
+                message=f"Could not read embedded pakfile: {info.pakfile_error}",
+                fixable=False,
+                context={"error": info.pakfile_error},
+            )
+        )
+        return findings
+
+    names = [e.name for e in info.pakfile_entries]
+    lower = [n.lower() for n in names]
+
+    # nav meshes don't carry over to cs2 (different format); flag if embedded.
+    nav = [n for n in names if n.lower().endswith(".nav")]
+    if nav:
+        findings.append(
+            Finding(
+                issue_id="manual_rebuild_nav",
+                severity="info",
+                message=(
+                    f"{len(nav)} nav file(s) embedded; cs2 uses a different nav format. "
+                    "Regenerate with `nav_generate` after import."
+                ),
+                fixable=False,
+                context={"files": nav[:5], "count": len(nav)},
+            )
+        )
+
+    # radar overviews are in a new format in cs2 (vmat + dds replaced by .png/.vmat).
+    radar = [n for n in names if "overviews/" in n.lower() and ("radar" in n.lower())]
+    if radar:
+        findings.append(
+            Finding(
+                issue_id="manual_rebuild_radar",
+                severity="info",
+                message=(
+                    f"{len(radar)} radar overview asset(s) embedded; the cs2 radar "
+                    "pipeline uses a different format and the editor `Generate Radar` step."
+                ),
+                fixable=False,
+                context={"files": radar[:5], "count": len(radar)},
+            )
+        )
+
+    # soundscape txt is csgo-only; cs2 uses .vsndevts.
+    soundscape = [n for n in names if "soundscape" in n.lower() and n.lower().endswith(".txt")]
+    if soundscape:
+        findings.append(
+            Finding(
+                issue_id="manual_review_soundscapes",
+                severity="info",
+                message=(
+                    f"{len(soundscape)} embedded soundscape txt file(s); cs2 expects "
+                    "`scripts/soundevents/*.vsndevts` instead. Re-author after import."
+                ),
+                fixable=False,
+                context={"files": soundscape[:5], "count": len(soundscape)},
+            )
+        )
+
+    # lua / squirrel script blobs won't run in cs2 (vscript surface differs).
+    scripts = [n for n in names if n.lower().endswith((".lua", ".nut"))]
+    if scripts:
+        findings.append(
+            Finding(
+                issue_id="pakfile_scripts",
+                severity="warn",
+                message=(
+                    f"{len(scripts)} embedded script file(s) (lua/nut). cs2 vscript "
+                    "is incompatible; behavior won't carry over."
+                ),
+                fixable=False,
+                context={"files": scripts[:5], "count": len(scripts)},
+            )
+        )
+
+    # files under a literal `csgo/` subfolder bite the importer (per upstream
+    # pitfall #9). pakfile entries with that prefix are a strong signal.
+    csgo_pathed = [n for n in names if n.lower().startswith("materials/csgo/")]
+    if csgo_pathed:
+        findings.append(
+            Finding(
+                issue_id="pakfile_csgo_subfolder",
+                severity="warn",
+                message=(
+                    f"{len(csgo_pathed)} embedded asset(s) live under `materials/csgo/`; "
+                    "the cs2 importer special-cases that folder name."
+                ),
+                fixable=False,
+                context={"files": csgo_pathed[:5], "count": len(csgo_pathed)},
+            )
+        )
+
+    # cubemaps embedded in the pakfile (.hdr.vtf etc) need a rebuild in cs2.
+    cubemaps = [n for n in lower if "/cubemap" in n or n.startswith("cubemap")]
+    if cubemaps:
+        findings.append(
+            Finding(
+                issue_id="manual_rebuild_cubemaps",
+                severity="info",
+                message=(
+                    f"{len(cubemaps)} embedded cubemap asset(s); run `buildcubemaps` "
+                    "in cs2 after import. Source 2 envmaps are not compatible."
+                ),
+                fixable=False,
+                context={"count": len(cubemaps)},
+            )
+        )
+
+    return findings

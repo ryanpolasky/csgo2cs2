@@ -1,4 +1,7 @@
 # vmf analysis with no file writes.
+#
+# pitfall sources documented inline; central attribution lives in
+# README.md "Prior art & attributions".
 
 from __future__ import annotations
 
@@ -23,11 +26,12 @@ KNOWN_CS2_SKIES: Set[str] = {
 
 # csgo skies that are HDR-only (no LDR fallback) historically caused the
 # importer to fail. flagging them separately so users get a targeted message.
+# source: andreaskeller96/cs2-import-scripts pitfall list ("hdr skybox -> import
+# WILL FAIL").
 HDR_ONLY_SKIES: Set[str] = {
     "sky_borealis01_hdr",
     "sky_csgo_cloudy01_hdr",
     "sky_csgo_night02_hdr",
-    "sky_dust",  # csgo dust2 sky historically ldr-only in some installs
     "sky_dust_hdr",
     "sky_office_hdr",
     "sky_baggage_hdr",
@@ -63,8 +67,47 @@ LEGACY_SPAWN_ENTITIES: Set[str] = {
     "info_player_start",
 }
 
+# entities source 2 / cs2 deprecates or replaces. these survive the import
+# but are dead weight afterward; we surface them as info findings with a
+# "what to do" pointer in the explain registry.
+# sources:
+#   - ata4/bspsrc README "Limitations and known bugs"
+#     (func_instance, func_viscluster, info_no_dynamic_shadow consumed by vbsp)
+#   - valve developer wiki cs2 visibility / fog notes
+DEPRECATED_S2_ENTITIES: Set[str] = {
+    "func_areaportal",
+    "func_areaportalwindow",
+    "func_occluder",
+    "func_viscluster",
+    "env_fog_controller",
+    "color_correction",
+    "color_correction_volume",
+    "shadow_control",
+    "env_sun",
+    "env_lightglow",
+    "func_lod",
+    "func_dustmotes",
+    "func_smokevolume",
+    "logic_choreographed_scene",
+    "scripted_sequence",
+    "point_template",
+}
+
+# entities that need user action after import (cubemaps, soundscapes, etc.)
+# we emit a single info per category if any are present, plus a category-level
+# "manual_rebuild_*" finding so the explain registry can surface guidance.
+NEEDS_REBUILD_ENTITIES: Dict[str, str] = {
+    "env_cubemap": "manual_rebuild_cubemaps",
+    "env_soundscape": "manual_review_soundscapes",
+    "env_soundscape_proxy": "manual_review_soundscapes",
+    "env_soundscape_triggerable": "manual_review_soundscapes",
+    "ambient_generic": "manual_review_soundscapes",
+    "info_overlay": "manual_review_overlays",
+}
+
 SKYNAME_RE = re.compile(r'"skyname"\s*"([^"]+)"', re.IGNORECASE)
 CLASSNAME_RE = re.compile(r'"classname"\s*"([^"]+)"', re.IGNORECASE)
+INSTANCE_FILE_RE = re.compile(r'"file"\s*"([^"]+\.vmf)"', re.IGNORECASE)
 
 # value of any vmf key that looks like an asset path. matches material/model/
 # sound/file references. catches values that contain forward slashes plus a
@@ -89,6 +132,27 @@ _ASSET_EXT_RE = re.compile(
     re.IGNORECASE,
 )
 _ABS_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")  # windows drive-letter paths
+
+# first path segment named "csgo". per upstream pitfall list, having a
+# folder literally named "csgo" anywhere in your asset tree breaks the
+# importer because the script special-cases the csgo install dir.
+_CSGO_SUBFOLDER_RE = re.compile(r"(?:^|[\\/])csgo[\\/]", re.IGNORECASE)
+
+# clip-style texture references. tools/* clips are recognized by the importer;
+# anything else with "clip" in the name is a custom clip and gets dropped.
+# source: andreaskeller96 pitfall list ("Custom clip textures will not be
+# imported").
+_CLIP_REF_RE = re.compile(
+    r'"material"\s*"([^"\n]*?clip[^"\n]*)"',
+    re.IGNORECASE,
+)
+_TOOLS_CLIP_PREFIXES = (
+    "tools/toolsclip",
+    "tools/toolsplayerclip",
+    "tools/toolsnpcclip",
+    "tools/toolsgrenadeclip",
+    "tools/clip",
+)
 
 
 @dataclass
@@ -135,6 +199,11 @@ def _extract_asset_refs(text: str) -> List[str]:
         if is_asset_key or looks_like_path:
             refs.add(val)
     return sorted(refs)
+
+
+def _is_tools_clip(path: str) -> bool:
+    norm = path.replace("\\", "/").lower()
+    return any(norm.startswith(p) for p in _TOOLS_CLIP_PREFIXES)
 
 
 # run every vmf check we currently support.
@@ -223,6 +292,39 @@ def analyze_vmf(
                 )
             )
 
+    # source 2 deprecated / replaced entities. info-severity because the
+    # import succeeds; the user just needs to know they're dead weight.
+    for cls in sorted(class_counts):
+        if cls in DEPRECATED_S2_ENTITIES:
+            analysis.findings.append(
+                Finding(
+                    issue_id="entity_deprecated_s2",
+                    severity="info",
+                    message=(
+                        f"`{cls}` x{class_counts[cls]} is deprecated/replaced in CS2; "
+                        "review after import."
+                    ),
+                    fixable=False,
+                    context={"classname": cls, "count": class_counts[cls]},
+                )
+            )
+
+    # rebuild reminders driven by entity presence (one finding per category)
+    rebuild_emitted: Set[str] = set()
+    for cls, rebuild_id in NEEDS_REBUILD_ENTITIES.items():
+        if cls not in class_counts or rebuild_id in rebuild_emitted:
+            continue
+        rebuild_emitted.add(rebuild_id)
+        analysis.findings.append(
+            Finding(
+                issue_id=rebuild_id,
+                severity="info",
+                message=_REBUILD_MESSAGES[rebuild_id],
+                fixable=False,
+                context={"trigger": cls},
+            )
+        )
+
     # need spawn points for a playable cs map
     required_modes = {
         "info_player_counterterrorist": "CT spawn",
@@ -240,10 +342,43 @@ def analyze_vmf(
                 )
             )
 
+    # multiple light_environment entities are broken in cs2's vrad
+    light_env_count = class_counts.get("light_environment", 0)
+    if light_env_count > 1:
+        analysis.findings.append(
+            Finding(
+                issue_id="light_environment_count",
+                severity="warn",
+                message=(
+                    f"{light_env_count} `light_environment` entities found; "
+                    "cs2 expects exactly one."
+                ),
+                fixable=False,
+                context={"count": light_env_count},
+            )
+        )
+
+    # custom clip textures get silently dropped by the importer
+    for ref in _CLIP_REF_RE.findall(text):
+        if not _is_tools_clip(ref):
+            analysis.findings.append(
+                Finding(
+                    issue_id="texture_clip_custom",
+                    severity="warn",
+                    message=(
+                        f"Custom clip texture `{ref}` will not survive the import; "
+                        "replace with `tools/toolsclip` or `tools/toolsplayerclip` in s1 hammer."
+                    ),
+                    fixable=False,
+                    context={"path": ref},
+                )
+            )
+
     # asset reference scan: spaces / drive-letter / backslashes blow up the
     # importer or break case-sensitive filesystems.
     asset_refs = _extract_asset_refs(text)
     analysis.asset_refs = asset_refs
+    csgo_subfolder_emitted = False
     for ref in asset_refs:
         if " " in ref:
             analysis.findings.append(
@@ -279,5 +414,38 @@ def analyze_vmf(
                     context={"path": ref},
                 )
             )
+        # custom subfolder named "csgo" trips the importer's path heuristics
+        if not csgo_subfolder_emitted and _CSGO_SUBFOLDER_RE.search(ref):
+            csgo_subfolder_emitted = True
+            analysis.findings.append(
+                Finding(
+                    issue_id="asset_path_csgo_subfolder",
+                    severity="warn",
+                    message=(
+                        f"Asset path `{ref}` lives under a `csgo/` subfolder; the cs2 "
+                        "importer special-cases that name and may resolve assets to "
+                        "the install dir instead of yours."
+                    ),
+                    fixable=False,
+                    context={"path": ref},
+                )
+            )
 
     return analysis
+
+
+# messages for the manual-rebuild category findings.
+_REBUILD_MESSAGES: Dict[str, str] = {
+    "manual_rebuild_cubemaps": (
+        "env_cubemap entities present; run `buildcubemaps` in cs2 after import "
+        "to bake new envmaps. CSGO cubemaps don't transfer."
+    ),
+    "manual_review_soundscapes": (
+        "soundscape / ambient entities present; cs2 uses .vsndevts soundscape "
+        "scripts instead of CSGO's scripts/soundscapes_*.txt. Re-author after import."
+    ),
+    "manual_review_overlays": (
+        "info_overlay entities present; overlays often need re-positioning after "
+        "the cs2 import re-bakes brush UVs."
+    ),
+}
