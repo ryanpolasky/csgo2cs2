@@ -13,7 +13,10 @@ from .commands import decompile as cmd_decompile
 from .commands import doctor as cmd_doctor
 from .commands import download as cmd_download
 from .commands import init_cmd as cmd_init
+from .commands import list_cmd as cmd_list
 from .commands import port as cmd_port
+from .commands import status_cmd as cmd_status
+from .commands import tools_cmd as cmd_tools
 from .logging_utils import error, setup_logging
 
 
@@ -42,10 +45,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     cmd_init.register(sub)
     cmd_doctor.register(sub)
+    cmd_tools.register(sub)
     cmd_download.register(sub)
     cmd_decompile.register(sub)
     cmd_analyze.register(sub)
     cmd_port.register(sub)
+    cmd_list.register(sub)
+    cmd_status.register(sub)
     cmd_cleanup.register(sub)
 
     return parser
@@ -65,6 +71,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         error(f"Unexpected error: {exc}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 

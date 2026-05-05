@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
+    "ruff>=0.6,<0.7",
 ]
 
 [project.scripts]
@@ -30,3 +31,29 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "C4",   # comprehensions
+]
+ignore = [
+    "E501", # long lines (handled by formatter)
+    "UP035", # deprecated typing imports we keep for clarity
+    "UP006", # `Dict`/`List`/`Tuple` style we keep for clarity
+    "UP007", # `Optional[X]` over `X | None` for readability
+    "B008",  # default argument calls (false-positive on dataclass fields)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F841"]

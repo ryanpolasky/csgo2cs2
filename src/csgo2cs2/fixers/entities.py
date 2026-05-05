@@ -47,7 +47,7 @@ def remove_unsupported_entity(text: str, finding: Finding) -> Tuple[str, bool, s
         end = _find_block_end(text, brace_idx)
         if end < 0:
             break
-        block = text[m.start():end]
+        block = text[m.start() : end]
         cls_match = CLASSNAME_RE.search(block)
         if cls_match and cls_match.group(1) == target:
             removed_spans.append((m.start(), end))
@@ -63,7 +63,11 @@ def remove_unsupported_entity(text: str, finding: Finding) -> Tuple[str, bool, s
             end += 1
         text = text[:start] + text[end:]
 
-    return text, True, f"removed {len(removed_spans)} `{target}` entit{'y' if len(removed_spans) == 1 else 'ies'}"
+    return (
+        text,
+        True,
+        f"removed {len(removed_spans)} `{target}` entit{'y' if len(removed_spans) == 1 else 'ies'}",
+    )
 
 
 base.register("entity_unsupported", remove_unsupported_entity)

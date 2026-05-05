@@ -2,7 +2,6 @@
 
 from csgo2cs2.analyzers.vmf import KNOWN_CS2_SKIES, analyze_vmf
 
-
 VMF_MINIMAL = """\
 versioninfo
 {
@@ -73,9 +72,9 @@ entity
     text = _vmf() + extra
     a = analyze_vmf(text)
     cls_findings = [
-        f for f in a.findings
-        if f.issue_id == "entity_unsupported"
-        and f.context.get("classname") == "env_cascade_light"
+        f
+        for f in a.findings
+        if f.issue_id == "entity_unsupported" and f.context.get("classname") == "env_cascade_light"
     ]
     assert len(cls_findings) == 1
     assert cls_findings[0].fixable
@@ -97,10 +96,7 @@ world
 }
 """
     a = analyze_vmf(text)
-    missing = sorted(
-        f.context["classname"]
-        for f in a.findings if f.issue_id == "missing_spawn"
-    )
+    missing = sorted(f.context["classname"] for f in a.findings if f.issue_id == "missing_spawn")
     assert missing == ["info_player_counterterrorist", "info_player_terrorist"]
 
 

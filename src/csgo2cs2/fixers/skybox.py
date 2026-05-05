@@ -18,7 +18,7 @@ def fix_skybox(text: str, finding: Finding) -> Tuple[str, bool, str]:
         return text, False, "no replacement provided"
 
     new_text, count = SKYNAME_REPLACE_RE.subn(
-        lambda m: f'{m.group(1)}{replacement}{m.group(3)}',
+        lambda m: f"{m.group(1)}{replacement}{m.group(3)}",
         text,
         count=1,
     )

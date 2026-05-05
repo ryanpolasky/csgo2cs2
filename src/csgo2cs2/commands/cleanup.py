@@ -58,10 +58,7 @@ def run(args: argparse.Namespace) -> int:
             warn(f"already gone: {dest}")
             continue
         if c.overwrote_existing:
-            warn(
-                f"skipped (would clobber pre-existing file): {dest}; "
-                "manual review needed"
-            )
+            warn(f"skipped (would clobber pre-existing file): {dest}; " "manual review needed")
             issues += 1
             continue
         if args.dry_run:

@@ -40,9 +40,7 @@ class PortManifest:
             self.patched_files.append(s)
 
     def record_rename(self, original: Path, renamed_to: Path) -> None:
-        self.renamed_files.append(
-            RenamedFile(original=str(original), renamed_to=str(renamed_to))
-        )
+        self.renamed_files.append(RenamedFile(original=str(original), renamed_to=str(renamed_to)))
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,7 +48,7 @@ class PortManifest:
             json.dump(asdict(self), f, indent=2)
 
     @classmethod
-    def load(cls, path: Path) -> "PortManifest":
+    def load(cls, path: Path) -> PortManifest:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         copied = [CopiedFile(**c) for c in data.pop("copied_files", [])]

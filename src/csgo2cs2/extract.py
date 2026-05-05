@@ -31,9 +31,7 @@ def extract_bsp_assets(cfg: Config, bsp_path: Path, output_dir: Path) -> Extract
         result = vpkedit.extract(bsp_path, output_dir)
         if result.returncode == 0:
             success(f"vpkedit extracted assets to {output_dir}")
-            return ExtractResult(
-                tool_used="vpkedit", output_dir=output_dir, succeeded=True
-            )
+            return ExtractResult(tool_used="vpkedit", output_dir=output_dir, succeeded=True)
         warn(f"vpkedit exit code {result.returncode}; trying bspzip fallback")
 
     bspzip = BSPZip(cfg.bspzip_path)
@@ -42,9 +40,7 @@ def extract_bsp_assets(cfg: Config, bsp_path: Path, output_dir: Path) -> Extract
         result = bspzip.extract(bsp_path, output_dir)
         if result.returncode == 0:
             success(f"bspzip extracted assets to {output_dir}")
-            return ExtractResult(
-                tool_used="bspzip", output_dir=output_dir, succeeded=True
-            )
+            return ExtractResult(tool_used="bspzip", output_dir=output_dir, succeeded=True)
         warn(f"bspzip exit code {result.returncode}")
 
     return ExtractResult(
