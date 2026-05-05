@@ -17,6 +17,7 @@ from ..tools.bspzip import BSPZip
 from ..tools.steamcmd import SteamCMD
 from ..tools.vpkedit import VPKEdit
 from ..utils.backup import backup_file, has_marker
+from ..utils.steam import find_csgo_install
 
 DECODE_MARKER = ".decode("
 
@@ -85,22 +86,23 @@ def run(args: argparse.Namespace) -> int:
             success(f"{st.name}: {st.path}")
         else:
             warn(f"{st.name}: not configured or not found")
-            issues.append(
-                f"Set `{st.name}_path` in config or place {st.name} on PATH"
-            )
+            issues.append(f"Set `{st.name}_path` in config or place {st.name} on PATH")
 
     header("CS:GO/CS2 Install")
     if cfg.csgo_install_path and Path(cfg.csgo_install_path).exists():
         success(f"csgo_install_path: {cfg.csgo_install_path}")
     else:
         warn("csgo_install_path is not set or does not exist")
-        issues.append("Set `csgo_install_path` to the Counter-Strike Global Offensive folder")
+        detected = find_csgo_install()
+        if detected:
+            info(f"detected install at {detected}; run `csgo2cs2 init` to record it")
+        issues.append("Set `csgo_install_path` (or run `csgo2cs2 init` to auto-detect)")
 
     if cfg.cs2_bin_path:
         if Path(cfg.cs2_bin_path).exists():
             success(f"cs2_bin_path: {cfg.cs2_bin_path}")
             if is_windows() and not _path_contains(cfg.cs2_bin_path):
-                warn(f"cs2_bin_path is not on PATH; Valve's import script needs it")
+                warn("cs2_bin_path is not on PATH; Valve's import script needs it")
                 issues.append(f"Add `{cfg.cs2_bin_path}` to PATH")
         else:
             warn(f"cs2_bin_path does not exist: {cfg.cs2_bin_path}")
@@ -206,4 +208,4 @@ def _strip_decode(line: str) -> str:
                 break
     if end < 0:
         return line  # unbalanced; leave alone
-    return line[:idx] + line[end + 1:]
+    return line[:idx] + line[end + 1 :]

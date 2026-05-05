@@ -39,9 +39,7 @@ class BSPSource(ToolAdapter):
     def decompile(self, bsp_path: Path, output_dir: Path) -> subprocess.CompletedProcess:
         resolved = self.resolve()
         if not resolved:
-            raise ToolNotFoundError(
-                "BSPSource is not configured. Set `bspsource_path` in config."
-            )
+            raise ToolNotFoundError("BSPSource is not configured. Set `bspsource_path` in config.")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         bsp_str = str(bsp_path)
@@ -50,9 +48,7 @@ class BSPSource(ToolAdapter):
         if resolved.endswith(".jar"):
             java = self._resolve_java()
             if not java:
-                raise ToolNotFoundError(
-                    "Java is required to run BSPSource jar but was not found."
-                )
+                raise ToolNotFoundError("Java is required to run BSPSource jar but was not found.")
             cmd = [java, "-jar", resolved, "-o", out_str, bsp_str]
         else:
             # wrapper script form, usually bspsrc.bat or bspsrc.sh

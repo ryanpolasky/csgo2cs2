@@ -8,13 +8,7 @@ from csgo2cs2.fixers.skybox import fix_skybox
 
 
 def _wrap_world(sky: str) -> str:
-    return (
-        "world\n{\n"
-        "\t\"id\" \"1\"\n"
-        "\t\"classname\" \"worldspawn\"\n"
-        f"\t\"skyname\" \"{sky}\"\n"
-        "}\n"
-    )
+    return "world\n{\n" '\t"id" "1"\n' '\t"classname" "worldspawn"\n' f'\t"skyname" "{sky}"\n' "}\n"
 
 
 def test_skybox_fixer_replaces_value():
@@ -29,11 +23,12 @@ def test_skybox_fixer_replaces_value():
 
 
 def test_skybox_fixer_no_op_when_no_skyname():
-    text = "world\n{\n\t\"classname\" \"worldspawn\"\n}\n"
+    text = 'world\n{\n\t"classname" "worldspawn"\n}\n'
     a = analyze_vmf(text)
     # analyzer reports skybox_missing, which is not fixable
     # direct fixer calls without a skyname should bail out cleanly
     from csgo2cs2.analyzers.vmf import Finding
+
     fake_finding = Finding(
         issue_id="skybox_unknown",
         severity="warn",
@@ -49,14 +44,14 @@ def test_skybox_fixer_no_op_when_no_skyname():
 def test_entity_fixer_removes_block():
     text = (
         _wrap_world("sky_day01_01")
-        + "entity\n{\n\t\"id\" \"10\"\n\t\"classname\" \"env_cascade_light\"\n}\n"
-        + "entity\n{\n\t\"id\" \"11\"\n\t\"classname\" \"info_player_terrorist\"\n}\n"
+        + 'entity\n{\n\t"id" "10"\n\t"classname" "env_cascade_light"\n}\n'
+        + 'entity\n{\n\t"id" "11"\n\t"classname" "info_player_terrorist"\n}\n'
     )
     a = analyze_vmf(text)
     cascade_finding = next(
-        f for f in a.findings
-        if f.issue_id == "entity_unsupported"
-        and f.context.get("classname") == "env_cascade_light"
+        f
+        for f in a.findings
+        if f.issue_id == "entity_unsupported" and f.context.get("classname") == "env_cascade_light"
     )
     new_text, applied, detail = remove_unsupported_entity(text, cascade_finding)
     assert applied
@@ -67,7 +62,7 @@ def test_entity_fixer_removes_block():
 def test_apply_all_chains_fixers():
     text = (
         _wrap_world("sky_csgo_old")
-        + "entity\n{\n\t\"id\" \"10\"\n\t\"classname\" \"env_cascade_light\"\n}\n"
+        + 'entity\n{\n\t"id" "10"\n\t"classname" "env_cascade_light"\n}\n'
     )
     a = analyze_vmf(text, default_skybox="sky_day01_01")
     new_text, results = apply_all(text, a.findings)

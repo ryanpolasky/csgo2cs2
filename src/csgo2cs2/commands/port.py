@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from ..logging_utils import error, info, warn
 from ..platform_check import WindowsRequiredError
@@ -13,7 +14,17 @@ def register(subparsers) -> None:
         "port",
         help="Full pipeline: download, decompile, analyze, and import.",
     )
-    p.add_argument("url_or_id", help="Workshop URL or numeric ID")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument(
+        "url_or_id",
+        nargs="?",
+        help="Workshop URL or numeric ID",
+    )
+    src.add_argument(
+        "--bsp",
+        type=Path,
+        help="Skip the SteamCMD download and use a local .bsp file instead.",
+    )
     p.add_argument("--addon", required=True, help="CS2 addon name to import into")
     p.add_argument(
         "--auto",
@@ -24,6 +35,21 @@ def register(subparsers) -> None:
         "--skip-import",
         action="store_true",
         help="Run download/decompile/analyze only; skip the Windows-only import step.",
+    )
+    p.add_argument(
+        "--no-use-bsp",
+        action="store_true",
+        help="Do not pass `-usebsp` to the importer (rare; default is on).",
+    )
+    p.add_argument(
+        "--no-merge-instances",
+        action="store_true",
+        help="Pass `-usebsp_nomergeinstances` to preserve func_instance entities.",
+    )
+    p.add_argument(
+        "--skip-deps",
+        action="store_true",
+        help="Pass `-skipdeps` to the importer (only re-generate the .vmap).",
     )
     p.set_defaults(func=run)
 
@@ -38,6 +64,10 @@ def run(args: argparse.Namespace) -> int:
             auto=args.auto,
             skip_import=args.skip_import,
             config_path=args.config,
+            local_bsp=args.bsp,
+            use_bsp=not args.no_use_bsp,
+            no_merge_instances=args.no_merge_instances,
+            skip_deps=args.skip_deps,
         )
     except WindowsRequiredError as exc:
         if args.skip_import:

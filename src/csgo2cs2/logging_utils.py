@@ -5,7 +5,9 @@ from __future__ import annotations
 import sys
 
 try:
-    from colorama import init as _colorama_init, Fore, Style
+    from colorama import Fore, Style
+    from colorama import init as _colorama_init
+
     _colorama_init()
     _HAS_COLOR = True
 except ImportError:  # colorama is a hard dep, but fail soft

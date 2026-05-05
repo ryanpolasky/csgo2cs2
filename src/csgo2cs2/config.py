@@ -16,15 +16,17 @@ DEFAULT_WORKSPACE_DIR = DEFAULT_CONFIG_DIR / "workspace"
 class Config:
     # external tool paths
     steamcmd_path: Optional[str] = None
-    bspsource_path: Optional[str] = None        # bspsrc.jar or wrapper script
+    bspsource_path: Optional[str] = None  # bspsrc.jar or wrapper script
     vpkedit_path: Optional[str] = None
     bspzip_path: Optional[str] = None
-    java_path: Optional[str] = None             # optional override; PATH used otherwise
+    java_path: Optional[str] = None  # optional override; PATH used otherwise
+    import_script_path: Optional[str] = None  # explicit import_map_community.py override
+    python_executable: Optional[str] = None  # python to invoke the importer with
 
     # cs:go/cs2 install layout
-    csgo_install_path: Optional[str] = None     # "Counter-Strike Global Offensive" folder
-    cs2_addons_path: Optional[str] = None       # <install>/game/csgo_addons
-    cs2_bin_path: Optional[str] = None          # <install>/game/bin/win64
+    csgo_install_path: Optional[str] = None  # "Counter-Strike Global Offensive" folder
+    cs2_addons_path: Optional[str] = None  # <install>/game/csgo_addons
+    cs2_bin_path: Optional[str] = None  # <install>/game/bin/win64
     legacy_csgo_bin_path: Optional[str] = None  # <install>/bin
 
     # workspace root for downloads, decompiles, manifests, reports
@@ -38,6 +40,7 @@ class Config:
 
     # behavior toggles
     auto_apply_doctor_fixes: bool = False
+    steamcmd_retries: int = 3
 
 
 def _resolve_path(path: Optional[str]) -> Path:
