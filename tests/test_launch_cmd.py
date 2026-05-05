@@ -68,8 +68,9 @@ def test_autodetect_handles_no_maps(tmp_path: Path) -> None:
 
 
 def test_build_cmdline_includes_addon_and_map(tmp_path: Path) -> None:
-    cmd = launch_cmd.build_cmdline(Path("/fake/cs2.exe"), "myaddon", "de_dust2", hammer=False)
-    assert cmd[0] == "/fake/cs2.exe"
+    exe = tmp_path / "cs2.exe"
+    cmd = launch_cmd.build_cmdline(exe, "myaddon", "de_dust2", hammer=False)
+    assert cmd[0] == str(exe)
     assert "-game" in cmd
     assert "csgo" in cmd
     assert "-addon" in cmd
@@ -78,8 +79,10 @@ def test_build_cmdline_includes_addon_and_map(tmp_path: Path) -> None:
     assert "de_dust2" in cmd
 
 
-def test_build_cmdline_hammer_omits_map() -> None:
-    cmd = launch_cmd.build_cmdline(Path("/fake/cs2.exe"), "myaddon", "de_dust2", hammer=True)
+def test_build_cmdline_hammer_omits_map(tmp_path: Path) -> None:
+    exe = tmp_path / "cs2.exe"
+    cmd = launch_cmd.build_cmdline(exe, "myaddon", "de_dust2", hammer=True)
+    assert cmd[0] == str(exe)
     assert "-tools" in cmd
     assert "+map" not in cmd  # workshop tools mode ignores +map
 
