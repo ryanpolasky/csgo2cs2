@@ -7,6 +7,7 @@ import sys
 from typing import Optional, Sequence
 
 from . import __version__
+from .commands import about_cmd as cmd_about
 from .commands import analyze as cmd_analyze
 from .commands import cleanup as cmd_cleanup
 from .commands import decompile as cmd_decompile
@@ -14,10 +15,12 @@ from .commands import doctor as cmd_doctor
 from .commands import download as cmd_download
 from .commands import explain_cmd as cmd_explain
 from .commands import init_cmd as cmd_init
+from .commands import launch_cmd as cmd_launch
 from .commands import list_cmd as cmd_list
 from .commands import port as cmd_port
 from .commands import status_cmd as cmd_status
 from .commands import tools_cmd as cmd_tools
+from .commands import verify_cmd as cmd_verify
 from .logging_utils import error, setup_logging
 
 
@@ -55,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_list.register(sub)
     cmd_status.register(sub)
     cmd_cleanup.register(sub)
+    cmd_launch.register(sub)
+    cmd_verify.register(sub)
+    cmd_about.register(sub)
 
     return parser
 

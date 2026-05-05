@@ -12,6 +12,9 @@ SKYNAME_REPLACE_RE = re.compile(r'("skyname"\s*")([^"]+)(")', re.IGNORECASE)
 
 
 # replace the first skyname value with the configured replacement.
+# the analyzer chooses a mood-aware replacement (see pick_smart_skybox) and
+# stuffs both the smart pick and the user's default into context, so the
+# detail message can hint when we deviated from the default.
 def fix_skybox(text: str, finding: Finding) -> Tuple[str, bool, str]:
     replacement = str(finding.context.get("replacement") or "").strip()
     if not replacement:
@@ -25,7 +28,11 @@ def fix_skybox(text: str, finding: Finding) -> Tuple[str, bool, str]:
     if count == 0:
         return text, False, "no skyname key found"
     current = str(finding.context.get("current") or "<unknown>")
-    return new_text, True, f"skyname `{current}` -> `{replacement}`"
+    default = str(finding.context.get("default") or "")
+    detail = f"skyname `{current}` -> `{replacement}`"
+    if default and default != replacement:
+        detail += f" (mood-matched; default would have been `{default}`)"
+    return new_text, True, detail
 
 
 base.register("skybox_unknown", fix_skybox)

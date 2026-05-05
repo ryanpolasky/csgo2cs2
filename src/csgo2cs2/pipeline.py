@@ -34,6 +34,7 @@ def run_port_pipeline(
     no_merge_instances: bool = False,
     skip_deps: bool = False,
     dry_run: bool = False,
+    export_images: Optional[str] = None,
 ) -> int:
     cfg = load_config(config_path)
 
@@ -72,6 +73,12 @@ def run_port_pipeline(
         if not bsp:
             manifest.save(manifest_path)
             return 1
+
+    # optional: export workshop preview image + metadata. soft-fails — a
+    # flaky steam web call shouldn't abort the actual port. local-bsp mode
+    # has no upstream item to query, so we silently skip it there.
+    if export_images and not local_bsp:
+        _export_workshop_images(workshop_id, export_images)
 
     # step 2: inspect the bsp before decompile
     header("Step 2/5: Inspect BSP")
@@ -147,6 +154,26 @@ def run_port_pipeline(
     manifest.save(manifest_path)
     info(f"Manifest saved: {manifest_path}")
     return rc
+
+
+# soft-fails: a flaky Steam web call must NOT kill the actual port.
+# logged via warn() instead of error() and does not change rc.
+def _export_workshop_images(workshop_id: str, out_dir: str) -> None:
+    from .utils.workshop_meta import (
+        WorkshopMetadataError,
+        export_to,
+        fetch_metadata,
+    )
+
+    info(f"Fetching workshop metadata for {workshop_id}...")
+    try:
+        meta = fetch_metadata(workshop_id)
+        target = export_to(meta, Path(out_dir).expanduser())
+    except WorkshopMetadataError as exc:
+        warn(f"workshop image export skipped: {exc}")
+        return
+    title = meta.title or "<no title>"
+    success(f"Exported workshop images: {target}/  ({title})")
 
 
 def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
@@ -326,6 +353,43 @@ def _stage_assets(extracted_dir: Path, staged_root: Path) -> int:
     return copied
 
 
+# rename `<staged>/<bucket>/csgo/` -> `<staged>/<bucket>/csgo_legacy/` for
+# every pakfile content bucket. matches the .vmf rewrite the
+# `asset_path_csgo_subfolder` fixer does so the renamed paths still resolve
+# against the staged tree.
+#
+# idempotent: if `csgo_legacy/` already exists we merge `csgo/`'s contents
+# into it (skipping identical files) and then remove the now-empty csgo/.
+# returns the number of buckets we touched.
+def _rename_csgo_subdirs(staged_root: Path) -> int:
+    if not staged_root.is_dir():
+        return 0
+    touched = 0
+    for sub in _PAKFILE_CONTENT_SUBDIRS:
+        old = staged_root / sub / "csgo"
+        if not old.is_dir():
+            continue
+        new = staged_root / sub / "csgo_legacy"
+        if not new.exists():
+            old.rename(new)
+            touched += 1
+            continue
+        # merge: copy each file under csgo/ into csgo_legacy/ if missing or
+        # different size, then remove csgo/.
+        for item in old.rglob("*"):
+            if not item.is_file():
+                continue
+            rel = item.relative_to(old)
+            target = new / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and target.stat().st_size == item.stat().st_size:
+                continue
+            shutil.copy2(item, target)
+        shutil.rmtree(old)
+        touched += 1
+    return touched
+
+
 # show users the importer command line without invoking it (or any
 # windows-gated machinery). also previews the asset pre-copy plan.
 def _print_dry_run_plan(
@@ -461,6 +525,13 @@ def _stage_and_import(
             success(f"Pre-copied {n} pakfile asset(s) into {s1_content_dir}/")
         else:
             info("No pakfile assets needed pre-copying.")
+
+    # match the .vmf-side `asset_path_csgo_subfolder` fixer rewrite of
+    # `csgo/` -> `csgo_legacy/`. safe to run unconditionally; it's a
+    # no-op when there's no csgo/ subdir under any of the staged buckets.
+    renamed = _rename_csgo_subdirs(s1_content_dir)
+    if renamed:
+        info(f"Renamed `csgo/` -> `csgo_legacy/` under {renamed} staged content bucket(s).")
 
     inputs = ImportInputs(
         s1_gameinfo_dir=s1_gameinfo_dir,

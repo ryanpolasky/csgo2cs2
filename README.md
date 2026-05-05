@@ -107,6 +107,13 @@ csgo2cs2 list                                   # list prior ports under workspa
 csgo2cs2 status "<workshop-url-or-id>"          # show one port's manifest
 csgo2cs2 cleanup "<workshop-url-or-id>"         # undo install-side mutations
 csgo2cs2 cleanup "<workshop-url-or-id>" --dry-run
+csgo2cs2 launch <addon>                         # open cs2 with the addon active (Windows; --print-only elsewhere)
+csgo2cs2 launch <addon> --hammer                # open Hammer 2 instead of the game
+csgo2cs2 launch <addon> --map de_dust2          # override the auto-detected map
+csgo2cs2 verify <addon>                         # post-port sanity check (.vmap, addoninfo, asset refs)
+csgo2cs2 about                                  # version, attribution, links
+csgo2cs2 download <id> --export-images <dir>    # also save the workshop preview + metadata.json
+csgo2cs2 port <id> --addon <name> --export-images <dir>  # same, alongside the full port pipeline
 ```
 
 ## Findings
@@ -128,7 +135,7 @@ into `jq` via `--report-json`. Current set:
 | `asset_path_space`          | error    | no      | a material/model path contains a space                                     |
 | `asset_path_absolute`       | error    | no      | a material/model path uses a Windows drive letter                          |
 | `asset_path_backslash`      | warn     | yes     | a material/model path uses backslashes                                     |
-| `asset_path_csgo_subfolder` | warn     | no      | a material/model path lives under a folder literally named `csgo/`         |
+| `asset_path_csgo_subfolder` | warn     | yes     | a material/model path lives under a folder literally named `csgo/` (auto-rewritten to `csgo_legacy/` + matching staged-tree rename)          |
 | `manual_rebuild_cubemaps`   | info     | no      | env_cubemap entities or pakfile cubemap assets present (run buildcubemaps) |
 | `manual_review_soundscapes` | info     | no      | soundscape/ambient entities or `scripts/soundscapes_*.txt` in pakfile      |
 | `manual_review_overlays`    | info     | no      | `info_overlay` entities (UVs re-bake during import)                        |
@@ -177,6 +184,82 @@ Two `--dry-run` flags let you preview changes before they hit disk:
   download / decompile / analyze flow but stops short of the cs2 import.
   It prints the asset pre-copy plan and the exact importer command it
   would run, so you can copy-paste it manually if you want to.
+
+## Smart skybox replacement
+
+When `--fix` rewrites a `skybox_unknown` or `skybox_hdr_only` finding, it
+doesn't always fall back to the same default sky. The fixer first looks
+at the original skyname for mood hints (desert / urban / industrial /
+…) and picks the closest **wiki-confirmed CS2 sky** from the [official
+CS2 sky list](https://developer.valvesoftware.com/wiki/Counter-Strike_2_Workshop_Tools/CS2_Sky_List).
+If no hint matches, it falls back to `cfg.default_skybox` (default:
+`sky_cs_office`, an overcast neutral chosen so it doesn't visibly fight
+the map's existing `light_environment`).
+
+| original skyname contains      | replaced with                  |
+|--------------------------------|--------------------------------|
+| `dust2` / `dust_` / `dust.`    | `sky_de_dust2`                 |
+| `mirage` / `arabia` / `desert` / `sahara` | `sky_de_mirage`     |
+| `anubis` / `annubis` / `egypt` / `pharaoh` | `sky_de_annubis`   |
+| `inferno` / `coast` / `mediterranean` | `s2_de_inferno_sky01`   |
+| `italy` / `italia`             | `cs_italy_s2_skybox_2`         |
+| `overpass` / `euro`            | `sky_de_overpass_01`           |
+| `office` / `embassy` / `station` | `sky_cs_office`              |
+| `vertigo` / `downtown` / `urban` / `urb_` / `alley` / `city` | `sky_de_vertigo` |
+| `nuke` / `industrial` / `factory` | `sky_de_nuke`               |
+| `aztec` / `ancient` / `jungle` / `temple` / `ruins` | `sky_hr_aztec_02_lighting` |
+| _(none of the above)_          | `cfg.default_skybox` (`sky_cs_office`) |
+
+You can override `cfg.default_skybox` to any wiki-confirmed sky from the
+list above. Custom skies you've added to your CS2 install can be added
+to `cfg.cs2_sky_list` so they don't trip `skybox_unknown`.
+
+## Post-port helpers
+
+After the import succeeds the workflow tail-end is two more commands:
+
+```bash
+csgo2cs2 verify <addon>          # cross-platform sanity check
+csgo2cs2 launch <addon>          # windows-only; opens cs2 with the addon
+```
+
+`verify` checks that the addon directory looks plausible **without**
+actually loading cs2:
+
+- a `.vmap` file exists under `<addon>/maps/`,
+- `addoninfo.json` (or `.gi` / `.txt`) parses and is non-empty,
+- a sample of material / model refs in the `.vmap` resolves on disk
+  (catches the "all my custom textures are missing" failure mode that
+  otherwise only shows up as purple/black checkers in-game).
+
+It exits non-zero if any of those fail, so you can wire it into CI or a
+post-port script.
+
+`launch` reads the addon's `maps/*.vmap` to find the map name, then runs
+the equivalent of `cs2.exe -game csgo -addon <name> +map <mapname>`.
+On non-Windows hosts it falls back to printing the command — useful as
+a sanity-check on macOS/Linux or for pasting into a Wine launcher.
+`--hammer` opens the workshop tools (Hammer 2) instead of the game;
+`--map <mapname>` overrides auto-detection if the addon ships multiple
+`.vmap` files.
+
+## Workshop image export
+
+`csgo2cs2 download` and `csgo2cs2 port` can optionally save the workshop
+item's preview image alongside a `metadata.json` blob (title,
+description, tags, creation/update timestamps) for re-use when you
+re-publish the ported map:
+
+```bash
+csgo2cs2 download <id> --export-images ./images
+csgo2cs2 port <id> --addon my_addon --auto --export-images ./images
+```
+
+That writes `./images/<workshop_id>/preview.jpg` plus
+`./images/<workshop_id>/metadata.json`. Off by default; the network call
+to Steam's anonymous `ISteamRemoteStorage/GetPublishedFileDetails`
+endpoint only happens when you opt in, and is **soft-failed** —
+flaky web behavior won't kill an in-progress port.
 
 ## Known Limitations
 
@@ -257,6 +340,9 @@ src/csgo2cs2/
     list_cmd.py
     status_cmd.py
     cleanup.py
+    launch_cmd.py        # csgo2cs2 launch <addon>
+    verify_cmd.py        # csgo2cs2 verify <addon>
+    about_cmd.py         # csgo2cs2 about
   tools/                 # external tool adapters
     base.py
     steamcmd.py
@@ -273,10 +359,10 @@ src/csgo2cs2/
     base.py              # registry + apply_all
     skybox.py            # skybox_unknown / skybox_hdr_only
     entities.py          # entity_unsupported / entity_deprecated_s2
-    asset_paths.py       # asset_path_backslash
+    asset_paths.py       # asset_path_backslash + asset_path_csgo_subfolder
     light_environment.py # light_environment_count dedupe
   utils/                 # url, paths, backup, manifest, steam, downloader,
-                         #   tools_registry helpers
+                         #   tools_registry, workshop_meta helpers
 tests/                   # pytest suite
   fixtures/              # check-in vmf samples for snapshot tests
 ```

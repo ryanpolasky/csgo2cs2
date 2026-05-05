@@ -12,14 +12,18 @@ def _wrap_world(sky: str) -> str:
 
 
 def test_skybox_fixer_replaces_value():
+    # `sky_csgo_old` doesn't trip any mood rule, so it falls through to
+    # the configured default. (The default is `sky_cs_office` in the new
+    # config, but the test explicitly passes one to make the assertion
+    # robust against future default changes.)
     text = _wrap_world("sky_csgo_old")
-    a = analyze_vmf(text, default_skybox="sky_day01_01")
+    a = analyze_vmf(text, default_skybox="sky_cs_office")
     sky_finding = next(f for f in a.findings if f.issue_id == "skybox_unknown")
     new_text, applied, detail = fix_skybox(text, sky_finding)
     assert applied
-    assert "sky_day01_01" in new_text
+    assert "sky_cs_office" in new_text
     assert "sky_csgo_old" not in new_text
-    assert "sky_day01_01" in detail
+    assert "sky_cs_office" in detail
 
 
 def test_skybox_fixer_no_op_when_no_skyname():
@@ -34,7 +38,7 @@ def test_skybox_fixer_no_op_when_no_skyname():
         severity="warn",
         message="forced",
         fixable=True,
-        context={"current": "x", "replacement": "sky_day01_01"},
+        context={"current": "x", "replacement": "sky_cs_office"},
     )
     new_text, applied, detail = fix_skybox(text, fake_finding)
     assert applied is False
@@ -43,7 +47,7 @@ def test_skybox_fixer_no_op_when_no_skyname():
 
 def test_entity_fixer_removes_block():
     text = (
-        _wrap_world("sky_day01_01")
+        _wrap_world("sky_cs_office")
         + 'entity\n{\n\t"id" "10"\n\t"classname" "env_cascade_light"\n}\n'
         + 'entity\n{\n\t"id" "11"\n\t"classname" "info_player_terrorist"\n}\n'
     )
@@ -60,24 +64,29 @@ def test_entity_fixer_removes_block():
 
 
 def test_apply_all_chains_fixers():
+    # `sky_csgo_old` is not a mood match -> falls through to the explicit
+    # default we pass in.
     text = (
         _wrap_world("sky_csgo_old")
         + 'entity\n{\n\t"id" "10"\n\t"classname" "env_cascade_light"\n}\n'
     )
-    a = analyze_vmf(text, default_skybox="sky_day01_01")
+    a = analyze_vmf(text, default_skybox="sky_cs_office")
     new_text, results = apply_all(text, a.findings)
     applied_ids = {r.issue_id for r in results if r.applied}
     assert "skybox_unknown" in applied_ids
     assert "entity_unsupported" in applied_ids
-    assert "sky_day01_01" in new_text
+    assert "sky_cs_office" in new_text
     assert "env_cascade_light" not in new_text
 
 
 def test_skybox_fixer_applies_to_hdr_only():
+    # PR5: "office" trips the smart-skybox rule (mapped to wiki-confirmed
+    # `sky_cs_office`), so the HDR-only office sky is replaced with the
+    # mood-matched cs2 office sky.
     text = _wrap_world("sky_office_hdr")
-    a = analyze_vmf(text, default_skybox="sky_day01_01")
+    a = analyze_vmf(text)
     new_text, results = apply_all(text, a.findings)
     applied_ids = {r.issue_id for r in results if r.applied}
     assert "skybox_hdr_only" in applied_ids
-    assert "sky_day01_01" in new_text
+    assert "sky_cs_office" in new_text
     assert "sky_office_hdr" not in new_text
