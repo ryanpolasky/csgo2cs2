@@ -1,0 +1,182 @@
+// Hand-authored fixture for the csgo2cs2 analyzer.
+// Trips one finding from every category so the snapshot test covers them.
+// Public domain / CC0 - no copy of any real workshop map.
+
+versioninfo
+{
+	"editorversion" "400"
+	"editorbuild" "8276"
+	"mapversion" "0"
+	"formatversion" "100"
+	"prefab" "0"
+}
+visgroups
+{
+}
+viewsettings
+{
+	"bSnapToGrid" "1"
+	"bShowGrid" "1"
+}
+
+world
+{
+	"id" "1"
+	"mapversion" "0"
+	"classname" "worldspawn"
+	"detailmaterial" "detail/detailsprites"
+	"detailvbsp" "detail.vbsp"
+	"maxpropscreenwidth" "-1"
+	"skyname" "sky_office_hdr"
+}
+
+// CT spawn — required for "missing_spawn" not to fire on this side.
+entity
+{
+	"id" "100"
+	"classname" "info_player_counterterrorist"
+	"origin" "0 0 0"
+}
+
+// T spawn — same.
+entity
+{
+	"id" "101"
+	"classname" "info_player_terrorist"
+	"origin" "256 0 0"
+}
+
+// Legacy spawn from a non-CS Source title (DOD-era axis spawn).
+// Triggers: entity_legacy_spawn (warn).
+entity
+{
+	"id" "102"
+	"classname" "info_player_axis"
+	"origin" "512 0 0"
+}
+
+// Two `light_environment` entities.
+// Triggers: light_environment_count (warn).
+entity
+{
+	"id" "200"
+	"classname" "light_environment"
+	"_light" "200 200 220 200"
+	"angles" "0 220 0"
+	"pitch" "-50"
+}
+entity
+{
+	"id" "201"
+	"classname" "light_environment"
+	"_light" "100 100 120 100"
+	"angles" "0 80 0"
+	"pitch" "-30"
+}
+
+// Source 1 visibility entity. Source 2 has no equivalent.
+// Triggers: entity_deprecated_s2 (info, fixable).
+entity
+{
+	"id" "300"
+	"classname" "func_areaportal"
+	"origin" "0 0 64"
+}
+
+// Source 1 occluder — same category.
+// Triggers: entity_deprecated_s2 (info, fixable).
+entity
+{
+	"id" "301"
+	"classname" "func_occluder"
+	"origin" "0 0 128"
+}
+
+// Source 2 cubemaps need re-baking.
+// Triggers: manual_rebuild_cubemaps (info).
+entity
+{
+	"id" "400"
+	"classname" "env_cubemap"
+	"origin" "100 100 64"
+	"cubemapsize" "0"
+}
+
+// Soundscape entity needs re-authoring as a .vsndevts in cs2.
+// Triggers: manual_review_soundscapes (info).
+entity
+{
+	"id" "401"
+	"classname" "env_soundscape"
+	"origin" "0 0 32"
+	"soundscape" "office.industrial"
+}
+
+// info_overlay UVs re-bake during import.
+// Triggers: manual_review_overlays (info).
+entity
+{
+	"id" "402"
+	"classname" "info_overlay"
+	"origin" "200 0 0"
+	"material" "decals/decal_signroute001a"
+}
+
+// Unsupported entity (curated in the analyzer's UNSUPPORTED_ENTITIES set).
+// Triggers: entity_unsupported (warn, fixable).
+entity
+{
+	"id" "500"
+	"classname" "info_no_dynamic_shadow"
+	"origin" "300 0 0"
+}
+
+// Custom clip texture (not under tools/toolsclip*).
+// Triggers: texture_clip_custom (warn).
+entity
+{
+	"id" "600"
+	"classname" "func_brush"
+	"origin" "0 0 0"
+	"material" "office/office_clip_special"
+}
+
+// Asset path containing a literal space — kills the importer.
+// Triggers: asset_path_space (error).
+entity
+{
+	"id" "601"
+	"classname" "prop_static"
+	"origin" "0 100 0"
+	"model" "models/props/with space/desk.mdl"
+}
+
+// Asset path with a Windows drive letter.
+// Triggers: asset_path_absolute (error).
+entity
+{
+	"id" "602"
+	"classname" "prop_static"
+	"origin" "0 200 0"
+	"model" "C:/Users/oops/desk.mdl"
+}
+
+// Asset path with backslashes.
+// Triggers: asset_path_backslash (warn, fixable).
+entity
+{
+	"id" "603"
+	"classname" "prop_static"
+	"origin" "0 300 0"
+	"model" "models\office\desk.mdl"
+}
+
+// Asset path under a folder literally named "csgo/".
+// Triggers: asset_path_csgo_subfolder (warn).
+entity
+{
+	"id" "604"
+	"classname" "func_brush"
+	"origin" "0 400 0"
+	"material" "csgo/office/wall_panel"
+}

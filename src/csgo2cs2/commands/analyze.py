@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import sys
 from pathlib import Path
@@ -54,6 +55,14 @@ def register(subparsers) -> None:
         "--explain",
         action="store_true",
         help="After listing findings, print a curated what/why/fix block per issue_id.",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "With --fix, print the unified diff of what would change without "
+            "writing the file or its backup. Use this to preview fixer output."
+        ),
     )
     p.set_defaults(func=run)
 
@@ -147,12 +156,33 @@ def run(args: argparse.Namespace) -> int:
         info("Re-run with `--fix` to apply auto-fixes for entries marked [fix].")
         return 1
 
-    header("Applying fixes")
+    header("Applying fixes" if not args.dry_run else "Computing fixes (dry run)")
     new_text, results = apply_all(text, analysis.findings)
     applied = [r for r in results if r.applied]
     if not applied:
         warn("No fixes applied (no fixers matched the findings).")
         return 1
+
+    if args.dry_run:
+        # show the unified diff, do not write anything
+        for r in applied:
+            info(f"{r.issue_id}: {r.detail}")
+        diff = "".join(
+            difflib.unified_diff(
+                text.splitlines(keepends=True),
+                new_text.splitlines(keepends=True),
+                fromfile=str(vmf),
+                tofile=str(vmf) + " (after --fix)",
+                n=2,
+            )
+        )
+        if diff:
+            print()
+            sys.stdout.write(diff)
+            if not diff.endswith("\n"):
+                sys.stdout.write("\n")
+        info("Dry run: no files written. Re-run without `--dry-run` to apply.")
+        return 0
 
     out_path = Path(args.output).expanduser() if args.output else vmf
     if out_path == vmf:

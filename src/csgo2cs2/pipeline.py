@@ -33,6 +33,7 @@ def run_port_pipeline(
     use_bsp: bool = True,
     no_merge_instances: bool = False,
     skip_deps: bool = False,
+    dry_run: bool = False,
 ) -> int:
     cfg = load_config(config_path)
 
@@ -104,7 +105,7 @@ def run_port_pipeline(
 
     # step 5a: analyze and optionally auto-fix the vmf
     header("Step 5/5: Analyze and fix VMF")
-    vmf = _analyze_and_fix(vmf, cfg, manifest, auto=auto)
+    vmf = _analyze_and_fix(vmf, cfg, manifest, auto=auto, dry_run=dry_run)
 
     # step 5b: import with the windows-only cs2 toolchain
     if skip_import:
@@ -112,6 +113,23 @@ def run_port_pipeline(
         manifest.save(manifest_path)
         info(f"Manifest saved: {manifest_path}")
         return 0
+
+    if dry_run:
+        # show the importer command line without running it. compose the same
+        # inputs `_stage_and_import` would, so the cmd is faithful.
+        rc = _print_dry_run_plan(
+            cfg=cfg,
+            vmf=vmf,
+            bsp=bsp,
+            addon=addon,
+            workspace=workspace,
+            use_bsp=use_bsp,
+            no_merge_instances=no_merge_instances,
+            skip_deps=skip_deps,
+        )
+        manifest.save(manifest_path)
+        info(f"Manifest saved: {manifest_path}")
+        return rc
 
     require_windows("CS2 map import")
 
@@ -176,7 +194,14 @@ def _decompile(cfg: Config, bsp: Path, output_dir: Path) -> Optional[Path]:
 
 
 # analyze the vmf and write a fixed copy when `--auto` applies fixes.
-def _analyze_and_fix(vmf: Path, cfg: Config, manifest: PortManifest, auto: bool) -> Path:
+# in dry_run mode we still surface findings + would-apply fixers but never write.
+def _analyze_and_fix(
+    vmf: Path,
+    cfg: Config,
+    manifest: PortManifest,
+    auto: bool,
+    dry_run: bool = False,
+) -> Path:
     text = vmf.read_text(encoding="utf-8", errors="ignore")
     analysis = analyze_vmf(text, default_skybox=cfg.default_skybox)
 
@@ -196,6 +221,12 @@ def _analyze_and_fix(vmf: Path, cfg: Config, manifest: PortManifest, auto: bool)
     applied = [r for r in results if r.applied]
     if not applied:
         info("No fixers matched; using original VMF.")
+        return vmf
+
+    if dry_run:
+        info("Dry run: would apply the following fixes (no .fixed.vmf written):")
+        for r in applied:
+            info(f"  {r.issue_id}: {r.detail}")
         return vmf
 
     fixed = vmf.with_name(vmf.stem + ".fixed.vmf")
@@ -256,6 +287,113 @@ def _stage_vmf(vmf: Path, workspace: Path, mapname: str) -> Path:
     return staged_root
 
 
+# pre-copy bsp pakfile assets into the staged content tree so the importer
+# can resolve custom material/model/sound references against
+# `<s1_content_dir>/<asset>` instead of the user's csgo install (which only
+# has the base game's assets, not the workshop map's custom ones).
+# returns the count of files copied. directories that don't exist in the
+# source are silently skipped.
+_PAKFILE_CONTENT_SUBDIRS = (
+    "materials",
+    "models",
+    "sound",
+    "scripts",
+    "particles",
+    "resource",
+)
+
+
+def _stage_assets(extracted_dir: Path, staged_root: Path) -> int:
+    if not extracted_dir.is_dir():
+        return 0
+    copied = 0
+    for sub in _PAKFILE_CONTENT_SUBDIRS:
+        src = extracted_dir / sub
+        if not src.is_dir():
+            continue
+        dst = staged_root / sub
+        for item in src.rglob("*"):
+            if not item.is_file():
+                continue
+            rel = item.relative_to(src)
+            target = dst / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # only copy if missing or older; skip overwrites of identical files
+            if target.exists() and target.stat().st_size == item.stat().st_size:
+                continue
+            shutil.copy2(item, target)
+            copied += 1
+    return copied
+
+
+# show users the importer command line without invoking it (or any
+# windows-gated machinery). also previews the asset pre-copy plan.
+def _print_dry_run_plan(
+    cfg: Config,
+    vmf: Path,
+    bsp: Path,
+    addon: str,
+    workspace: Path,
+    use_bsp: bool,
+    no_merge_instances: bool,
+    skip_deps: bool,
+) -> int:
+    header("Dry run: importer plan")
+    if not cfg.csgo_install_path:
+        warn("csgo_install_path not set; dry-run cannot resolve the s1/s2 dirs.")
+        info("Set csgo_install_path in config to see the full would-run command.")
+        return 0
+    install = Path(cfg.csgo_install_path)
+    s1_gameinfo_dir = install / "csgo"
+    s2_gameinfo_dir = install / "game" / "csgo"
+    mapname = _derive_mapname(bsp)
+    s1_content_dir = workspace / "staged"
+
+    # preview the asset pre-copy
+    extracted = workspace / "extracted"
+    if extracted.is_dir():
+        n = sum(1 for p in extracted.rglob("*") if p.is_file())
+        info(f"Would pre-copy up to {n} pakfile asset(s) into {s1_content_dir}/")
+    else:
+        info("No extracted/ dir found; no pakfile assets to pre-copy.")
+
+    importer_path = _resolve_importer_path(cfg) or "<not configured>"
+    importer = ImportMapTool(
+        importer_path=importer_path if importer_path != "<not configured>" else None,
+        python_executable=cfg.python_executable or "python",
+    )
+    inputs = ImportInputs(
+        s1_gameinfo_dir=s1_gameinfo_dir,
+        s1_content_dir=s1_content_dir,
+        s2_gameinfo_dir=s2_gameinfo_dir,
+        s2_addon=addon,
+        mapname=mapname,
+    )
+    if importer.resolve():
+        cmd = importer.build_command(
+            inputs,
+            use_bsp=use_bsp,
+            no_merge_instances=no_merge_instances,
+            skip_deps=skip_deps,
+        )
+        info("Would run:")
+        # quote args containing spaces for copy-pasteability
+        quoted = " ".join(_shlex_quote(a) for a in cmd)
+        print(f"  {quoted}")
+    else:
+        info("Importer not resolvable; install via `csgo2cs2 tools install`.")
+        info(f"Inputs would be: addon={addon!r}, mapname={mapname!r}")
+
+    info("Dry run complete: nothing was imported and nothing was written.")
+    return 0
+
+
+def _shlex_quote(s: str) -> str:
+    if not s or any(c in s for c in (" ", "\t", '"', "'")):
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
+
+
 def _derive_mapname(bsp: Path) -> str:
     # safe-ify the bsp stem: lowercase, replace non-[a-z0-9_] with _.
     stem = bsp.stem.lower()
@@ -311,6 +449,18 @@ def _stage_and_import(
             "fails on spaces; move workspace_dir to a no-space path."
         )
         return 1
+
+    # pre-copy any pakfile-extracted custom assets into the staged content
+    # tree so the importer can resolve them by relative path. without this,
+    # custom .vmt/.mdl/.wav references fail and the import aborts on the
+    # first missing dep.
+    extracted_dir = workspace / "extracted"
+    if extracted_dir.is_dir():
+        n = _stage_assets(extracted_dir, s1_content_dir)
+        if n:
+            success(f"Pre-copied {n} pakfile asset(s) into {s1_content_dir}/")
+        else:
+            info("No pakfile assets needed pre-copying.")
 
     inputs = ImportInputs(
         s1_gameinfo_dir=s1_gameinfo_dir,

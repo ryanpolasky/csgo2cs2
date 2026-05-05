@@ -51,6 +51,15 @@ def register(subparsers) -> None:
         action="store_true",
         help="Pass `-skipdeps` to the importer (only re-generate the .vmap).",
     )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Run download/decompile/analyze and print the would-run importer "
+            "command, but skip applying fixes and skip the import. Useful for "
+            "previewing what `--auto` would change before committing."
+        ),
+    )
     p.set_defaults(func=run)
 
 
@@ -68,6 +77,7 @@ def run(args: argparse.Namespace) -> int:
             use_bsp=not args.no_use_bsp,
             no_merge_instances=args.no_merge_instances,
             skip_deps=args.skip_deps,
+            dry_run=args.dry_run,
         )
     except WindowsRequiredError as exc:
         if args.skip_import:

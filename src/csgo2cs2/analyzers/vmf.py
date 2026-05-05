@@ -304,7 +304,9 @@ def analyze_vmf(
                         f"`{cls}` x{class_counts[cls]} is deprecated/replaced in CS2; "
                         "review after import."
                     ),
-                    fixable=False,
+                    # `--fix` strips them since they're dead weight in cs2.
+                    # findings stay info-severity (they don't block import).
+                    fixable=True,
                     context={"classname": cls, "count": class_counts[cls]},
                 )
             )
@@ -353,7 +355,7 @@ def analyze_vmf(
                     f"{light_env_count} `light_environment` entities found; "
                     "cs2 expects exactly one."
                 ),
-                fixable=False,
+                fixable=True,  # fix = keep the first, delete the rest
                 context={"count": light_env_count},
             )
         )
@@ -410,7 +412,7 @@ def analyze_vmf(
                         f"Asset path `{ref}` uses backslashes; convert to forward "
                         "slashes for cross-platform safety."
                     ),
-                    fixable=False,
+                    fixable=True,  # safe text replace inside the quoted value
                     context={"path": ref},
                 )
             )
