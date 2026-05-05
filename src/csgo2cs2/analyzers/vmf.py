@@ -474,7 +474,9 @@ def analyze_vmf(
             )
         )
 
-    # custom clip textures get silently dropped by the importer
+    # custom clip textures get silently dropped by the importer; --fix
+    # rewrites them to `tools/toolsclip` (the importer-recognized default)
+    # so the .vmf at least documents what those brushes were before.
     for ref in _CLIP_REF_RE.findall(text):
         if not _is_tools_clip(ref):
             analysis.findings.append(
@@ -483,9 +485,9 @@ def analyze_vmf(
                     severity="warn",
                     message=(
                         f"Custom clip texture `{ref}` will not survive the import; "
-                        "replace with `tools/toolsclip` or `tools/toolsplayerclip` in s1 hammer."
+                        "auto-fix rewrites it to `tools/toolsclip`."
                     ),
-                    fixable=False,
+                    fixable=True,
                     context={"path": ref},
                 )
             )

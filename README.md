@@ -88,11 +88,13 @@ csgo2cs2 tools list                             # show installed tool paths
 csgo2cs2 doctor                                 # check tools and prereqs
 csgo2cs2 doctor --fix                           # apply install patches with backups
 csgo2cs2 doctor --unfix                         # reverse install patches (VAC-safe)
+csgo2cs2 doctor --json                          # machine-readable health report (jq-friendly)
 csgo2cs2 download "<workshop-url-or-id>"        # download via steamcmd
 csgo2cs2 decompile <bsp-path>                   # bspsource decompile
 csgo2cs2 analyze <vmf-path>                     # report vmf issues
 csgo2cs2 analyze <vmf-path> --fix               # apply auto-fixes (skybox, entities, paths, etc.)
 csgo2cs2 analyze <vmf-path> --fix --dry-run     # preview the unified diff of --fix without writing
+csgo2cs2 analyze <vmf-path> --fix --fix-spawns ct  # opt-in: rewrite legacy spawns to info_player_counterterrorist (or `t`)
 csgo2cs2 analyze <vmf-path> --bsp <bsp-path>    # also include bsp header + pakfile audit
 csgo2cs2 analyze <vmf-path> --explain           # print curated what/why/fix per finding
 csgo2cs2 analyze <vmf-path> --report-json       # machine-readable findings on stdout
@@ -111,9 +113,14 @@ csgo2cs2 launch <addon>                         # open cs2 with the addon active
 csgo2cs2 launch <addon> --hammer                # open Hammer 2 instead of the game
 csgo2cs2 launch <addon> --map de_dust2          # override the auto-detected map
 csgo2cs2 verify <addon>                         # post-port sanity check (.vmap, addoninfo, asset refs)
+csgo2cs2 publish <addon>                        # package addon dir into upload-ready zip + verify
+csgo2cs2 publish <addon> -o my_addon.zip        # override output path
+csgo2cs2 publish <addon> --skip-verify          # skip structural checks (faster; not recommended)
 csgo2cs2 about                                  # version, attribution, links
+csgo2cs2 completion bash                        # shell completion (also: zsh, powershell)
 csgo2cs2 download <id> --export-images <dir>    # also save the workshop preview + metadata.json
 csgo2cs2 port <id> --addon <name> --export-images <dir>  # same, alongside the full port pipeline
+csgo2cs2 port <id> --addon <name> --auto-addoninfo       # populate the addon's addoninfo.json from workshop metadata
 ```
 
 ## Findings
@@ -131,7 +138,7 @@ into `jq` via `--report-json`. Current set:
 | `entity_deprecated_s2`      | info     | yes     | classname has no Source 2 equivalent (areaportal, fog_controller, etc.)    |
 | `missing_spawn`             | warn     | no      | no `info_player_terrorist` or `info_player_counterterrorist`               |
 | `light_environment_count`   | warn     | yes     | more than one `light_environment` (cs2 expects exactly one)                |
-| `texture_clip_custom`       | warn     | no      | custom clip texture (importer drops anything outside `tools/toolsclip*`)   |
+| `texture_clip_custom`       | warn     | yes     | custom clip texture (auto-rewrites to `tools/toolsclip` so the importer keeps it) |
 | `asset_path_space`          | error    | no      | a material/model path contains a space                                     |
 | `asset_path_absolute`       | error    | no      | a material/model path uses a Windows drive letter                          |
 | `asset_path_backslash`      | warn     | yes     | a material/model path uses backslashes                                     |
@@ -261,6 +268,88 @@ to Steam's anonymous `ISteamRemoteStorage/GetPublishedFileDetails`
 endpoint only happens when you opt in, and is **soft-failed** —
 flaky web behavior won't kill an in-progress port.
 
+When metadata is fetched (via `--export-images` or `--auto-addoninfo`)
+it's also snapshotted into the port's `manifest.json`, so
+`csgo2cs2 status <id>` later shows the title, creator, tags, and a
+trimmed description without re-hitting the Steam API.
+
+## Auto-populate addoninfo
+
+`csgo2cs2 port <id> --addon <name> --auto --auto-addoninfo` writes a
+populated `addoninfo.json` (title / description / tags) plus the
+preview image as the addon thumbnail into the imported addon's
+directory. Existing user-authored `addoninfo.{json,gi,txt}` files are
+**never** overwritten unless you explicitly pass `--force-addoninfo`;
+auto-generated files carry a `_csgo2cs2: "auto-populated from workshop
+metadata"` sentinel so subsequent runs can tell the difference.
+
+## Publish
+
+`csgo2cs2 publish <addon>` runs the same structural checks as `verify`,
+then packages the addon directory into an upload-ready zip. Build
+artifacts (`*.bak`, `*.csgo2cs2.bak`, `_csgo2cs2_*` working files,
+`.DS_Store`, `Thumbs.db`, `*.tmp`) are excluded automatically:
+
+```bash
+csgo2cs2 publish my_addon                       # writes my_addon.zip in the workspace
+csgo2cs2 publish my_addon -o /tmp/release.zip   # custom output path
+csgo2cs2 publish my_addon --skip-verify         # skip structural checks (faster)
+csgo2cs2 publish my_addon --allow-errors        # build the zip even if verify reports errors
+```
+
+The zip layout matches what cs2's workshop upload expects: the addon's
+contents at the zip root, so unpacking yields a usable addon.
+
+## Spawn auto-conversion
+
+`csgo2cs2 analyze --fix --fix-spawns ct|t` opt-in rewrites legacy
+DOD/HL2-era spawn classnames (`info_player_axis`, `info_player_allies`,
+`info_player_combine`, `info_player_rebel`, `info_player_start`) to
+`info_player_counterterrorist` (`ct`) or `info_player_terrorist`
+(`t`). Off by default because the side choice is map-design-specific —
+some maps want every legacy spawn on T, others on CT, and some need a
+hybrid that only Hammer-side editing can do. When the flag is set the
+fixer counts each rewritten classname and prints a summary line.
+
+## Patch drift detection
+
+`doctor --fix` records a sha256 of every file it patched (currently
+`import_map_community.py` + the renamed `vpk.signatures.old`) into
+`<workspace_dir>/.csgo2cs2_drift.json`. Plain `doctor` re-hashes them
+on its next run and warns when one has drifted — which is Steam's
+usual mode of breaking these patches: a game update silently
+rewrites `import_map_community.py` back to its un-patched form, or
+restores `vpk.signatures` from the depot. The warning includes a hint
+to re-run `doctor --fix`.
+
+## Doctor JSON output
+
+`csgo2cs2 doctor --json` emits a structured JSON report capturing
+environment, tool, and install-patch state. Useful for CI gating or
+piping into `jq`:
+
+```bash
+csgo2cs2 doctor --json | jq '.summary.ok'           # boolean
+csgo2cs2 doctor --json | jq '.tools.steamcmd.path'
+csgo2cs2 doctor --json | jq '.install_patches.import_map_community_py.patched'
+```
+
+The report includes a `summary` block with `ok`, `issue_count`,
+`fixes_applied_count`, and `drift_count` so a CI step can `exit 1`
+when any of those signals a regression.
+
+## Shell completion
+
+```bash
+csgo2cs2 completion bash >> ~/.local/share/bash-completion/completions/csgo2cs2
+csgo2cs2 completion zsh  >> ~/.zfunc/_csgo2cs2 && fpath+=~/.zfunc && compinit
+csgo2cs2 completion powershell >> $PROFILE
+```
+
+Covers subcommand names, `--fix-spawns` sides (`ct` / `t`), and the
+`completion` argument values. Extend via `commands/completion_cmd.py`
+when adding new subcommands.
+
 ## Known Limitations
 
 - **windows-only `port`.** decompile fidelity is bounded by BSPSource: brushwork,
@@ -272,9 +361,10 @@ flaky web behavior won't kill an in-progress port.
   as `manual_rebuild_*` / `manual_review_*` info findings when it can detect
   the relevant entities or pakfile contents.
 - **legacy spawns** (`info_player_axis`, `info_player_allies`, etc.) are not
-  auto-converted because the side mapping (CT vs. T) is map-design-specific.
-  The analyzer flags them as `entity_legacy_spawn` warnings; remap them in
-  Hammer before re-running the import.
+  auto-converted by default because the side mapping (CT vs. T) is
+  map-design-specific. The analyzer flags them as `entity_legacy_spawn`
+  warnings; opt in with `analyze --fix --fix-spawns ct|t` to auto-rewrite
+  them to a single side.
 - **anonymous steamcmd downloads** for app `730` are unreliable; an authenticated
   Steam login may be required.
 
@@ -342,7 +432,9 @@ src/csgo2cs2/
     cleanup.py
     launch_cmd.py        # csgo2cs2 launch <addon>
     verify_cmd.py        # csgo2cs2 verify <addon>
+    publish_cmd.py       # csgo2cs2 publish <addon> -> upload-ready zip
     about_cmd.py         # csgo2cs2 about
+    completion_cmd.py    # csgo2cs2 completion bash|zsh|powershell
   tools/                 # external tool adapters
     base.py
     steamcmd.py
@@ -355,14 +447,17 @@ src/csgo2cs2/
     bsp.py               # bsp header + protection sniff + pakfile inventory + findings
     report.py            # structured json report builder
     explain.py           # curated what/why/fix registry per issue_id
+    roundtrip.py         # post-fix structural safety check (brace + quote balance)
   fixers/                # registered auto-fixers
     base.py              # registry + apply_all
     skybox.py            # skybox_unknown / skybox_hdr_only
     entities.py          # entity_unsupported / entity_deprecated_s2
     asset_paths.py       # asset_path_backslash + asset_path_csgo_subfolder
     light_environment.py # light_environment_count dedupe
+    clip_textures.py     # texture_clip_custom -> tools/toolsclip
+    spawns.py            # opt-in --fix-spawns ct|t legacy spawn rewriter
   utils/                 # url, paths, backup, manifest, steam, downloader,
-                         #   tools_registry, workshop_meta helpers
+                         #   tools_registry, workshop_meta, addoninfo, drift helpers
 tests/                   # pytest suite
   fixtures/              # check-in vmf samples for snapshot tests
 ```

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
+from .. import __version__
 from ..config import load_config
 from ..logging_utils import error, header, info, success, warn
 from ..platform_check import is_windows, os_label
@@ -17,6 +19,7 @@ from ..tools.bspzip import BSPZip
 from ..tools.steamcmd import SteamCMD
 from ..tools.vpkedit import VPKEdit
 from ..utils.backup import backup_file, backup_path_for, has_marker, restore_file
+from ..utils.drift import check_drift, load_state, record_fix, save_state
 from ..utils.steam import find_csgo_install
 
 DECODE_MARKER = ".decode("
@@ -39,6 +42,16 @@ def register(subparsers) -> None:
             "Reverse `--fix` mutations: restore the original "
             "import_map_community.py and rename vpk.signatures.old back "
             "to vpk.signatures so VAC-protected servers accept the install."
+        ),
+    )
+    p.add_argument(
+        "--json",
+        dest="emit_json",
+        action="store_true",
+        help=(
+            "Emit a structured JSON report of the doctor's findings instead "
+            "of human-readable output. CI scripts can `jq '.summary.ok'` to "
+            "gate builds on environment health."
         ),
     )
     p.set_defaults(func=run)
@@ -68,11 +81,18 @@ def run(args: argparse.Namespace) -> int:
     fixes_applied: List[str] = []
 
     if args.fix and args.unfix:
-        error("--fix and --unfix are mutually exclusive.")
+        if getattr(args, "emit_json", False):
+            json.dump({"error": "--fix and --unfix are mutually exclusive"}, sys.stdout)
+            sys.stdout.write("\n")
+        else:
+            error("--fix and --unfix are mutually exclusive.")
         return 2
 
     if args.unfix:
         return _run_unfix(cfg)
+
+    if getattr(args, "emit_json", False):
+        return _run_json(cfg, args.fix)
 
     header("Environment")
     info(f"OS: {os_label()}")
@@ -127,8 +147,11 @@ def run(args: argparse.Namespace) -> int:
         warn("cs2_bin_path is not set")
 
     header("Install Patches")
-    _check_install_patches(cfg, args.fix, issues, fixes_applied)
-    if not args.fix:
+    patched_paths = _check_install_patches(cfg, args.fix, issues, fixes_applied)
+    if args.fix and patched_paths:
+        _record_drift_state(cfg, patched_paths)
+    elif not args.fix:
+        _check_drift_state(cfg, patched_paths)
         info("Tip: `csgo2cs2 doctor --unfix` reverses these patches before going to VAC servers.")
 
     header("Summary")
@@ -144,10 +167,175 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _check_install_patches(cfg, fix: bool, issues: List[str], fixes_applied: List[str]) -> None:
+# emit a structured json report capturing the same checks the human
+# path performs. when `do_fix` is True, install patches are still
+# applied (with the same backup semantics) and the fixes_applied list
+# is included in the report.
+def _run_json(cfg, do_fix: bool) -> int:
+    issues: List[str] = []
+    fixes_applied: List[str] = []
+    report: Dict[str, Any] = {
+        "schema_version": 1,
+        "csgo2cs2_version": __version__,
+        "os": os_label(),
+        "python": {
+            "version": sys.version.split()[0],
+            "executable": sys.executable,
+        },
+        "modules": {
+            "colorama": _check_python_module("colorama"),
+        },
+        "tools": {},
+        "install": {
+            "csgo_install_path": cfg.csgo_install_path,
+            "csgo_install_present": bool(
+                cfg.csgo_install_path and Path(cfg.csgo_install_path).exists()
+            ),
+            "cs2_bin_path": cfg.cs2_bin_path,
+            "cs2_bin_present": bool(cfg.cs2_bin_path and Path(cfg.cs2_bin_path).exists()),
+            "cs2_bin_on_path": bool(cfg.cs2_bin_path and _path_contains(cfg.cs2_bin_path)),
+            "java_on_path": _on_path("java"),
+        },
+    }
+
+    for adapter in (
+        SteamCMD(cfg.steamcmd_path),
+        BSPSource(cfg.bspsource_path, java_path=cfg.java_path),
+        VPKEdit(cfg.vpkedit_path),
+        BSPZip(cfg.bspzip_path),
+    ):
+        st = adapter.status()
+        report["tools"][st.name] = {
+            "installed": st.installed,
+            "path": str(st.path) if st.path else None,
+        }
+        if not st.installed:
+            issues.append(f"{st.name} not configured/found")
+
+    if not report["modules"]["colorama"]:
+        issues.append("colorama not installed")
+    if not report["install"]["java_on_path"]:
+        issues.append("java not on PATH (BSPSource needs it)")
+    if not report["install"]["csgo_install_present"]:
+        issues.append("csgo_install_path missing or unset")
+    if cfg.cs2_bin_path and not report["install"]["cs2_bin_present"]:
+        issues.append("cs2_bin_path does not exist")
+    if cfg.cs2_bin_path and is_windows() and not report["install"]["cs2_bin_on_path"]:
+        issues.append("cs2_bin_path not on PATH")
+
+    # install patches: state-only in json mode unless --fix is set
+    patched_paths = _check_install_patches_silent(cfg, do_fix, issues, fixes_applied)
+    report["install_patches"] = _summarize_patches(cfg)
+    if do_fix and patched_paths:
+        _record_drift_state(cfg, patched_paths)
+    drift_results = _gather_drift(cfg, patched_paths)
+    report["drift"] = drift_results
+    report["fixes_applied"] = list(fixes_applied)
+    report["issues"] = list(issues)
+    report["summary"] = {
+        "ok": len(issues) == 0,
+        "issue_count": len(issues),
+        "fixes_applied_count": len(fixes_applied),
+        "drift_count": sum(1 for d in drift_results if d.get("drifted")),
+    }
+
+    json.dump(report, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
+    return 0 if not issues else 1
+
+
+# silent variant of _check_install_patches: no human prints, same
+# fix-side effects + tracked-paths return contract.
+def _check_install_patches_silent(
+    cfg, fix: bool, issues: List[str], fixes_applied: List[str]
+) -> List[Path]:
+    tracked: List[Path] = []
+    if not cfg.csgo_install_path:
+        return tracked
+    install = Path(cfg.csgo_install_path)
+    importer_candidates = [
+        install / "game" / "csgo" / "scripts" / "import_map_community.py",
+        install / "game" / "bin" / "win64" / "import_map_community.py",
+    ]
+    importer = next((p for p in importer_candidates if p.exists()), None)
+    if importer:
+        tracked.append(importer)
+        if has_marker(importer, DECODE_MARKER):
+            if fix:
+                _patch_remove_decode(importer)
+                fixes_applied.append(f"patched {importer}")
+            else:
+                issues.append(f"{importer.name} unpatched")
+
+    if cfg.cs2_bin_path:
+        sigs = Path(cfg.cs2_bin_path) / "vpk.signatures"
+        renamed = sigs.with_suffix(sigs.suffix + ".old")
+        tracked.append(renamed)
+        if sigs.exists():
+            if fix:
+                backup_file(sigs)
+                if renamed.exists():
+                    renamed.unlink()
+                sigs.rename(renamed)
+                fixes_applied.append(f"renamed {sigs.name} -> {renamed.name}")
+            else:
+                issues.append("vpk.signatures present (not yet renamed)")
+    return tracked
+
+
+def _summarize_patches(cfg) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "import_map_community_py": None,
+        "vpk_signatures": None,
+    }
+    if cfg.csgo_install_path:
+        install = Path(cfg.csgo_install_path)
+        for cand in (
+            install / "game" / "csgo" / "scripts" / "import_map_community.py",
+            install / "game" / "bin" / "win64" / "import_map_community.py",
+        ):
+            if cand.exists():
+                out["import_map_community_py"] = {
+                    "path": str(cand),
+                    "patched": not has_marker(cand, DECODE_MARKER),
+                }
+                break
+    if cfg.cs2_bin_path:
+        sigs = Path(cfg.cs2_bin_path) / "vpk.signatures"
+        renamed = sigs.with_suffix(sigs.suffix + ".old")
+        out["vpk_signatures"] = {
+            "live_present": sigs.exists(),
+            "renamed_present": renamed.exists(),
+            "patched": (not sigs.exists()) and renamed.exists(),
+        }
+    return out
+
+
+def _gather_drift(cfg, patched_paths: List[Path]) -> List[Dict[str, Any]]:
+    workspace = Path(cfg.workspace_dir).expanduser()
+    state = load_state(workspace)
+    if not state.entries:
+        return []
+    return [
+        {
+            "path": r.path,
+            "drifted": r.drifted,
+            "last_fixed_at": r.last_fixed_at,
+            "reason": r.reason,
+        }
+        for r in check_drift(state, patched_paths)
+    ]
+
+
+def _check_install_patches(
+    cfg, fix: bool, issues: List[str], fixes_applied: List[str]
+) -> List[Path]:
+    """returns the list of paths whose post-fix state should be tracked
+    for drift detection on subsequent runs."""
+    tracked: List[Path] = []
     if not cfg.csgo_install_path:
         warn("Skipping install patch checks (csgo_install_path not set)")
-        return
+        return tracked
 
     install = Path(cfg.csgo_install_path)
 
@@ -158,6 +346,11 @@ def _check_install_patches(cfg, fix: bool, issues: List[str], fixes_applied: Lis
     ]
     importer = next((p for p in importer_candidates if p.exists()), None)
     if importer:
+        # we always track the importer path: when it's still patched
+        # (success branch) drift will report unchanged; when it's been
+        # unpatched (warn branch) and we have a prior baseline, drift
+        # will surface that as "steam reverted this since last --fix".
+        tracked.append(importer)
         if has_marker(importer, DECODE_MARKER):
             warn(f"{importer.name} still contains `.decode(` (needs patch)")
             if fix:
@@ -176,6 +369,9 @@ def _check_install_patches(cfg, fix: bool, issues: List[str], fixes_applied: Lis
     if cfg.cs2_bin_path:
         sigs = Path(cfg.cs2_bin_path) / "vpk.signatures"
         renamed = sigs.with_suffix(sigs.suffix + ".old")
+        # track the renamed path so drift detection surfaces a returning
+        # vpk.signatures as steam having reshipped it.
+        tracked.append(renamed)
         if sigs.exists():
             warn("vpk.signatures is present (needs to be renamed)")
             if fix:
@@ -192,6 +388,40 @@ def _check_install_patches(cfg, fix: bool, issues: List[str], fixes_applied: Lis
             success("vpk.signatures already renamed")
         else:
             info("vpk.signatures not found (CS2 may not require this on your version)")
+
+    return tracked
+
+
+# write the post-fix state to <workspace_dir>/.csgo2cs2_drift.json so
+# subsequent doctor runs can detect when steam reverts our patches.
+def _record_drift_state(cfg, patched_paths: List[Path]) -> None:
+    workspace = Path(cfg.workspace_dir).expanduser()
+    state = load_state(workspace)
+    for p in patched_paths:
+        record_fix(state, p)
+    save_state(state, workspace)
+
+
+# compare current state against the recorded post-fix state. when a
+# tracked file's hash has drifted we surface it as a "steam likely
+# reverted this; re-run --fix" warning, which is the most common cause
+# of "i already ran doctor, why is import failing again" confusion.
+def _check_drift_state(cfg, patched_paths: List[Path]) -> None:
+    workspace = Path(cfg.workspace_dir).expanduser()
+    state = load_state(workspace)
+    if not state.entries:
+        return
+    results = check_drift(state, patched_paths)
+    drifted = [r for r in results if r.drifted]
+    if not drifted:
+        return
+    warn(
+        "patch drift detected on "
+        f"{len(drifted)} file(s) (steam likely reverted them in a recent update):"
+    )
+    for r in drifted:
+        warn(f"  {Path(r.path).name}: {r.reason}")
+    info("Tip: re-run `csgo2cs2 doctor --fix` to re-apply.")
 
 
 # patch valve's script after creating a backup.

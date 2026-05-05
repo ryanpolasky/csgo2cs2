@@ -18,7 +18,7 @@ from .platform_check import require_windows
 from .tools.bspsource import BSPSource
 from .tools.import_map import ImportInputs, ImportMapTool
 from .tools.steamcmd import CSGO_APP_ID, SteamCMD
-from .utils.manifest import PortManifest
+from .utils.manifest import PortManifest, WorkshopMeta
 from .utils.paths import ensure_dir, find_first
 from .utils.url import parse_workshop_id
 
@@ -35,6 +35,7 @@ def run_port_pipeline(
     skip_deps: bool = False,
     dry_run: bool = False,
     export_images: Optional[str] = None,
+    auto_addoninfo: bool = False,
 ) -> int:
     cfg = load_config(config_path)
 
@@ -74,11 +75,31 @@ def run_port_pipeline(
             manifest.save(manifest_path)
             return 1
 
-    # optional: export workshop preview image + metadata. soft-fails — a
-    # flaky steam web call shouldn't abort the actual port. local-bsp mode
-    # has no upstream item to query, so we silently skip it there.
-    if export_images and not local_bsp:
-        _export_workshop_images(workshop_id, export_images)
+    # optional: fetch workshop metadata. shared between --export-images
+    # (writes to a side dir) and --auto-addoninfo (writes into the addon
+    # dir post-import). local-bsp mode has no upstream item to query.
+    workshop_meta = None
+    if (export_images or auto_addoninfo) and not local_bsp:
+        workshop_meta = _fetch_workshop_meta(workshop_id)
+    if workshop_meta is not None:
+        # snapshot the metadata into the manifest so `status` can show
+        # title/description later without a network roundtrip.
+        import time as _time
+
+        manifest.record_workshop_meta(
+            WorkshopMeta(
+                title=workshop_meta.title,
+                description=workshop_meta.description,
+                creator=workshop_meta.creator,
+                tags=list(workshop_meta.tags),
+                preview_url=workshop_meta.preview_url,
+                time_created=workshop_meta.time_created,
+                time_updated=workshop_meta.time_updated,
+                fetched_at=_time.time(),
+            )
+        )
+    if export_images and workshop_meta is not None:
+        _write_workshop_images(workshop_meta, export_images)
 
     # step 2: inspect the bsp before decompile
     header("Step 2/5: Inspect BSP")
@@ -151,29 +172,99 @@ def run_port_pipeline(
         no_merge_instances=no_merge_instances,
         skip_deps=skip_deps,
     )
+
+    # post-import: optionally populate addoninfo.json + thumbnail from
+    # the workshop metadata we already fetched. soft-fails so that a
+    # successful import is never reported as failed because of a metadata
+    # write hiccup.
+    if rc == 0 and auto_addoninfo and workshop_meta is not None:
+        _populate_addoninfo(cfg, addon, workshop_meta, export_images)
+
     manifest.save(manifest_path)
     info(f"Manifest saved: {manifest_path}")
     return rc
 
 
 # soft-fails: a flaky Steam web call must NOT kill the actual port.
-# logged via warn() instead of error() and does not change rc.
-def _export_workshop_images(workshop_id: str, out_dir: str) -> None:
-    from .utils.workshop_meta import (
-        WorkshopMetadataError,
-        export_to,
-        fetch_metadata,
-    )
+# returns the metadata on success, None on failure.
+def _fetch_workshop_meta(workshop_id: str):
+    from .utils.workshop_meta import WorkshopMetadataError, fetch_metadata
 
     info(f"Fetching workshop metadata for {workshop_id}...")
     try:
-        meta = fetch_metadata(workshop_id)
+        return fetch_metadata(workshop_id)
+    except WorkshopMetadataError as exc:
+        warn(f"workshop metadata fetch skipped: {exc}")
+        return None
+
+
+# write the metadata + preview image to the side dir requested by
+# --export-images. failures are warn-only.
+def _write_workshop_images(meta, out_dir: str) -> None:
+    from .utils.workshop_meta import WorkshopMetadataError, export_to
+
+    try:
         target = export_to(meta, Path(out_dir).expanduser())
     except WorkshopMetadataError as exc:
         warn(f"workshop image export skipped: {exc}")
         return
     title = meta.title or "<no title>"
     success(f"Exported workshop images: {target}/  ({title})")
+
+
+# write addoninfo.json + addonimage into the imported addon dir,
+# pulling values from the workshop metadata. preview is sourced from
+# the export-images dir if it's already on disk; otherwise we re-fetch
+# it into a tempfile-style location under the workspace dir.
+def _populate_addoninfo(cfg: Config, addon: str, meta, export_images_dir: Optional[str]) -> None:
+    from .commands.launch_cmd import resolve_addon_dir
+    from .utils.addoninfo import copy_thumbnail, write_addoninfo
+
+    addon_dir = resolve_addon_dir(cfg, addon)
+    if addon_dir is None:
+        warn(f"auto-addoninfo skipped: cannot resolve addon dir for {addon!r}")
+        return
+    if not addon_dir.exists():
+        warn(f"auto-addoninfo skipped: addon dir does not exist: {addon_dir}")
+        return
+
+    written = write_addoninfo(meta, addon_dir)
+    if written is None:
+        info(f"auto-addoninfo: leaving existing addoninfo at {addon_dir} alone")
+    else:
+        success(f"auto-addoninfo: wrote {written.name}")
+
+    # locate the preview if --export-images already cached it; saves a
+    # second http roundtrip.
+    preview_path = None
+    if export_images_dir:
+        side_dir = Path(export_images_dir).expanduser() / str(meta.workshop_id)
+        if side_dir.is_dir():
+            for cand in side_dir.glob("preview.*"):
+                preview_path = cand
+                break
+
+    if preview_path is None and meta.preview_url:
+        # fetch directly into the addon dir as a tempfile, then let
+        # copy_thumbnail rename it. simpler than a separate fetch helper.
+        from .utils.downloader import DownloadError
+        from .utils.downloader import fetch as _fetch
+
+        tmp = addon_dir / "_csgo2cs2_preview_dl.tmp"
+        try:
+            _fetch(meta.preview_url, tmp, name=tmp.name, progress=None)
+            preview_path = tmp
+        except DownloadError as exc:
+            warn(f"auto-addoninfo: preview download failed: {exc}")
+
+    thumb = copy_thumbnail(preview_path, addon_dir)
+    if thumb:
+        success(f"auto-addoninfo: wrote {thumb.name}")
+    if preview_path is not None and preview_path.name.startswith("_csgo2cs2_preview_dl"):
+        try:
+            preview_path.unlink()
+        except OSError:
+            pass
 
 
 def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
