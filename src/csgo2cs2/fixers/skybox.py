@@ -29,3 +29,6 @@ def fix_skybox(text: str, finding: Finding) -> Tuple[str, bool, str]:
 
 
 base.register("skybox_unknown", fix_skybox)
+# the same fix logic applies to hdr-only skies; the analyzer still emits a
+# distinct issue_id so the message can be specific.
+base.register("skybox_hdr_only", fix_skybox)

@@ -1,6 +1,12 @@
 # tests for the vmf analyzer.
 
-from csgo2cs2.analyzers.vmf import KNOWN_CS2_SKIES, analyze_vmf
+from csgo2cs2.analyzers.vmf import (
+    HDR_ONLY_SKIES,
+    KNOWN_CS2_SKIES,
+    LEGACY_SPAWN_ENTITIES,
+    UNSUPPORTED_ENTITIES,
+    analyze_vmf,
+)
 
 VMF_MINIMAL = """\
 versioninfo
@@ -31,9 +37,10 @@ def _vmf(sky="sky_csgo_night02", extras: str = "") -> str:
 
 
 def test_known_cs2_sky_produces_no_skybox_finding():
-    text = _vmf(sky=next(iter(KNOWN_CS2_SKIES)))
+    text = _vmf(sky=next(iter(KNOWN_CS2_SKIES - HDR_ONLY_SKIES)))
     a = analyze_vmf(text)
     assert all(f.issue_id != "skybox_unknown" for f in a.findings)
+    assert all(f.issue_id != "skybox_hdr_only" for f in a.findings)
 
 
 def test_unknown_sky_is_flagged_and_fixable():
@@ -45,6 +52,18 @@ def test_unknown_sky_is_flagged_and_fixable():
     assert f.fixable
     assert f.context["current"] == "sky_csgo_someoldsky"
     assert f.context["replacement"] == "sky_day01_01"
+
+
+def test_hdr_only_sky_produces_dedicated_error_finding():
+    text = _vmf(sky="sky_office_hdr")
+    a = analyze_vmf(text, default_skybox="sky_day01_01")
+    hdr = [f for f in a.findings if f.issue_id == "skybox_hdr_only"]
+    assert len(hdr) == 1
+    assert hdr[0].severity == "error"
+    assert hdr[0].fixable
+    assert hdr[0].context["current"] == "sky_office_hdr"
+    # the unknown-sky finding must NOT also fire on hdr-only matches
+    assert not any(f.issue_id == "skybox_unknown" for f in a.findings)
 
 
 def test_missing_skyname_is_flagged_not_fixable():
@@ -81,6 +100,52 @@ entity
     assert cls_findings[0].context["count"] == 1
 
 
+def test_expanded_unsupported_set_covers_known_classes():
+    # the curated list should at minimum cover these documented offenders
+    expected = {
+        "env_cascade_light",
+        "info_player_logo",
+        "func_simpleladder",
+        "point_servercommand",
+    }
+    assert expected.issubset(UNSUPPORTED_ENTITIES)
+
+
+def test_extra_unsupported_entities_via_config():
+    extra = """\
+entity
+{
+\t"id" "30"
+\t"classname" "csgo_team_intro_camera"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text, extra_unsupported_entities=["csgo_team_intro_camera"])
+    matches = [
+        f
+        for f in a.findings
+        if f.issue_id == "entity_unsupported"
+        and f.context.get("classname") == "csgo_team_intro_camera"
+    ]
+    assert len(matches) == 1
+
+
+def test_legacy_spawn_entity_flagged_separately():
+    extra = """\
+entity
+{
+\t"id" "40"
+\t"classname" "info_player_axis"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    legacy = [f for f in a.findings if f.issue_id == "entity_legacy_spawn"]
+    assert len(legacy) == 1
+    assert legacy[0].context["classname"] == "info_player_axis"
+    assert "info_player_axis" in LEGACY_SPAWN_ENTITIES
+
+
 def test_required_spawns_detected():
     a = analyze_vmf(_vmf())
     missing = [f for f in a.findings if f.issue_id == "missing_spawn"]
@@ -106,3 +171,85 @@ def test_total_entities_and_class_counts():
     assert a.total_entities == 3
     assert a.class_counts["info_player_terrorist"] == 1
     assert a.class_counts["info_player_counterterrorist"] == 1
+
+
+def test_asset_path_with_space_flagged_as_error():
+    extra = """\
+entity
+{
+\t"id" "50"
+\t"classname" "func_brush"
+\t"material" "models/props/my prop/wall.vmt"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    spaces = [f for f in a.findings if f.issue_id == "asset_path_space"]
+    assert len(spaces) == 1
+    assert spaces[0].severity == "error"
+    assert "models/props/my prop/wall.vmt" == spaces[0].context["path"]
+
+
+def test_asset_path_absolute_drive_letter_flagged():
+    extra = """\
+entity
+{
+\t"id" "51"
+\t"classname" "prop_static"
+\t"model" "C:/dev/maps/myprop.mdl"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    abs_findings = [f for f in a.findings if f.issue_id == "asset_path_absolute"]
+    assert len(abs_findings) == 1
+    assert abs_findings[0].severity == "error"
+
+
+def test_asset_path_backslash_flagged_as_warning():
+    extra = """\
+entity
+{
+\t"id" "52"
+\t"classname" "prop_static"
+\t"model" "models\\\\props\\\\wall.mdl"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    bs = [f for f in a.findings if f.issue_id == "asset_path_backslash"]
+    assert len(bs) == 1
+    assert bs[0].severity == "warn"
+
+
+def test_asset_refs_dedup_and_sort():
+    extra = """\
+entity
+{
+\t"id" "60"
+\t"material" "props/wall.vmt"
+\t"texture" "props/wall.vmt"
+\t"model" "props/box.mdl"
+}
+"""
+    text = _vmf() + extra
+    a = analyze_vmf(text)
+    assert a.asset_refs == ["props/box.mdl", "props/wall.vmt"]
+
+
+def test_cs2_sky_list_override_accepts_custom_sky():
+    text = _vmf(sky="my_studio_sky")
+    a = analyze_vmf(text, cs2_sky_list=["my_studio_sky"])
+    assert all(f.issue_id != "skybox_unknown" for f in a.findings)
+
+
+def test_finding_to_dict_round_trip():
+    text = _vmf(sky="sky_csgo_someoldsky")
+    a = analyze_vmf(text)
+    d = a.to_dict()
+    assert d["skyname"] == "sky_csgo_someoldsky"
+    assert isinstance(d["findings"], list)
+    assert d["total_entities"] == a.total_entities
+    # findings serialize to dicts with all required keys
+    for f in d["findings"]:
+        assert {"issue_id", "severity", "message", "fixable", "context"} <= set(f.keys())

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from pathlib import Path
 
 from .. import fixers  # noqa: F401  (registers fixers on import)
+from ..analyzers.bsp import inspect_bsp
+from ..analyzers.report import build_report, write_report
 from ..analyzers.vmf import analyze_vmf
 from ..config import load_config
 from ..fixers.base import apply_all
@@ -19,6 +23,11 @@ def register(subparsers) -> None:
     )
     p.add_argument("vmf", help="Path to the .vmf file")
     p.add_argument(
+        "--bsp",
+        default=None,
+        help="Optional .bsp to include in the report (header + pakfile inventory).",
+    )
+    p.add_argument(
         "--fix",
         action="store_true",
         help="Apply auto-fixes in place (writes a `.csgo2cs2.bak` backup first).",
@@ -28,6 +37,17 @@ def register(subparsers) -> None:
         "-o",
         default=None,
         help="With --fix, write to a different path instead of overwriting.",
+    )
+    p.add_argument(
+        "--report-json",
+        nargs="?",
+        const="-",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Emit a structured JSON report. With no argument, prints to stdout; "
+            "with a path, writes there."
+        ),
     )
     p.set_defaults(func=run)
 
@@ -40,7 +60,36 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     text = vmf.read_text(encoding="utf-8", errors="ignore")
-    analysis = analyze_vmf(text, default_skybox=cfg.default_skybox)
+    analysis = analyze_vmf(
+        text,
+        default_skybox=cfg.default_skybox,
+        cs2_sky_list=cfg.cs2_sky_list,
+        extra_unsupported_entities=cfg.extra_unsupported_entities,
+    )
+
+    bsp_info = None
+    if args.bsp:
+        bsp_path = Path(args.bsp).expanduser()
+        if not bsp_path.exists():
+            error(f"BSP not found: {bsp_path}")
+            return 2
+        bsp_info = inspect_bsp(bsp_path)
+
+    if args.report_json is not None:
+        report = build_report(
+            vmf=analysis,
+            bsp=bsp_info,
+            inputs={"vmf": str(vmf), "bsp": str(args.bsp or "")},
+        )
+        if args.report_json == "-":
+            json.dump(report, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            dest = write_report(report, Path(args.report_json))
+            info(f"Report written: {dest}")
+        # in --report-json mode we still surface a non-zero exit when issues
+        # exist so callers can pipe + branch on it.
+        return 0 if not analysis.findings else 1
 
     header("Skybox")
     if analysis.skyname:
@@ -51,6 +100,16 @@ def run(args: argparse.Namespace) -> int:
     header("Entities")
     info(f"Total entities: {analysis.total_entities}")
     info(f"Unique classes: {len(analysis.class_counts)}")
+
+    if bsp_info is not None:
+        header("BSP")
+        info(f"version: {bsp_info.version}, valid_header: {bsp_info.valid_header}")
+        if bsp_info.suspected_protected:
+            warn(f"suspected protection marker: {bsp_info.detected_marker}")
+        if bsp_info.pakfile_error:
+            warn(f"pakfile: {bsp_info.pakfile_error}")
+        else:
+            info(f"pakfile: {bsp_info.pakfile_count} files, {bsp_info.pakfile_size} bytes")
 
     header("Findings")
     if not analysis.findings:

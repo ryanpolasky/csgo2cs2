@@ -17,10 +17,11 @@ internally, so we don't ship a separate `vbsp` adapter.
 ```
 workshop url
   -> SteamCMD               (download workshop item)
-  -> BSP inspector          (sanity + bspprotect detection)
+  -> BSP inspector          (header + bspprotect detection + pakfile inventory)
   -> VPKEdit / BSPZIP       (extract packed bsp content)
   -> BSPSource              (decompile .bsp -> .vmf)
-  -> VMF analyzer + fixers  (skybox, unsupported entities, paths)
+  -> VMF analyzer + fixers  (skybox, hdr-only sky, unsupported entities,
+                             legacy spawns, asset-path issues)
   -> stage <s1_content>/maps/<mapname>.vmf  (no spaces in path)
   -> import_map_community.py    (windows-only, 5 positional args + flags)
   -> manifest + report      (track install-side mutations)
@@ -87,6 +88,9 @@ csgo2cs2 download "<workshop-url-or-id>"        # download via steamcmd
 csgo2cs2 decompile <bsp-path>                   # bspsource decompile
 csgo2cs2 analyze <vmf-path>                     # report vmf issues
 csgo2cs2 analyze <vmf-path> --fix               # apply auto-fixes (skybox, entities)
+csgo2cs2 analyze <vmf-path> --bsp <bsp-path>    # also include bsp header + pakfile audit
+csgo2cs2 analyze <vmf-path> --report-json       # machine-readable findings on stdout
+csgo2cs2 analyze <vmf-path> --report-json out.json  # write findings to a file
 csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --auto   # full pipeline (windows)
 csgo2cs2 port --bsp ./local.bsp --addon my_addon --auto        # skip steamcmd, use a local file
 csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --skip-import   # cross-os dry run
@@ -95,6 +99,26 @@ csgo2cs2 status "<workshop-url-or-id>"          # show one port's manifest
 csgo2cs2 cleanup "<workshop-url-or-id>"         # undo install-side mutations
 csgo2cs2 cleanup "<workshop-url-or-id>" --dry-run
 ```
+
+## Findings
+
+`csgo2cs2 analyze` reports issues by `issue_id` so they're easy to grep / pipe
+into `jq` via `--report-json`. Current set:
+
+| issue_id                  | severity | fixable | when                                                        |
+| ------------------------- | -------- | ------- | ----------------------------------------------------------- |
+| `skybox_hdr_only`         | error    | yes     | skyname is in the curated HDR-only list (importer fails)    |
+| `skybox_unknown`          | warn     | yes     | skyname isn't in `KNOWN_CS2_SKIES` (or `cfg.cs2_sky_list`)  |
+| `skybox_missing`          | warn     | no      | no `skyname` key in worldspawn                              |
+| `entity_unsupported`      | warn     | yes     | classname is in `UNSUPPORTED_ENTITIES` + extras from config |
+| `entity_legacy_spawn`     | warn     | no      | DOD-era / Source 1 spawns instead of CS2 team spawns        |
+| `missing_spawn`           | warn     | no      | no `info_player_terrorist` or `info_player_counterterrorist`|
+| `asset_path_space`        | error    | no      | a material/model path contains a space                      |
+| `asset_path_absolute`     | error    | no      | a material/model path uses a Windows drive letter           |
+| `asset_path_backslash`    | warn     | no      | a material/model path uses backslashes                      |
+
+The JSON report includes a `summary` block with counts per severity plus a
+`fixable` count, so CI scripts can fail on `summary.error > 0`.
 
 ## Known Limitations
 
@@ -137,7 +161,8 @@ src/csgo2cs2/
     import_map.py
   analyzers/             # pure-python analysis
     vmf.py               # vmf text analysis -> findings
-    bsp.py               # bsp header + protection sniff
+    bsp.py               # bsp header + protection sniff + pakfile inventory
+    report.py            # structured json report builder
   fixers/                # registered auto-fixers
     base.py              # registry + apply_all
     skybox.py
