@@ -69,6 +69,15 @@ def register(subparsers) -> None:
             "<DIR>/<workshop_id>/ for reuse when re-publishing. Off by default."
         ),
     )
+    p.add_argument(
+        "--auto-addoninfo",
+        action="store_true",
+        help=(
+            "After import, populate the addon's addoninfo.json + addonimage from "
+            "the workshop metadata. Skipped if a user-authored addoninfo already "
+            "exists. Off by default; soft-fails if Steam can't be reached."
+        ),
+    )
     p.set_defaults(func=run)
 
 
@@ -88,6 +97,7 @@ def run(args: argparse.Namespace) -> int:
             skip_deps=args.skip_deps,
             dry_run=args.dry_run,
             export_images=args.export_images,
+            auto_addoninfo=args.auto_addoninfo,
         )
     except WindowsRequiredError as exc:
         if args.skip_import:

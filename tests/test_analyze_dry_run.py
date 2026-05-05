@@ -18,6 +18,7 @@ def _ns(**kwargs):
         "bsp": None,
         "explain": False,
         "dry_run": False,
+        "fix_spawns": None,
     }
     base.update(kwargs)
     return type("NS", (), base)

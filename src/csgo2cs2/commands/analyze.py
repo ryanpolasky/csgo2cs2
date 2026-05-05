@@ -12,6 +12,7 @@ from .. import fixers  # noqa: F401  (registers fixers on import)
 from ..analyzers import explain as explain_mod
 from ..analyzers.bsp import analyze_bsp_findings, inspect_bsp
 from ..analyzers.report import build_report, write_report
+from ..analyzers.roundtrip import verify_roundtrip
 from ..analyzers.vmf import analyze_vmf
 from ..config import load_config
 from ..fixers.base import apply_all
@@ -70,6 +71,18 @@ def register(subparsers) -> None:
         help=(
             "With --fix, print the unified diff of what would change without "
             "writing the file or its backup. Use this to preview fixer output."
+        ),
+    )
+    p.add_argument(
+        "--fix-spawns",
+        choices=("ct", "t"),
+        default=None,
+        help=(
+            "Opt-in: rewrite legacy DOD/HL2-era spawns "
+            "(info_player_axis/allies/start/etc.) to cs2's "
+            "info_player_counterterrorist (--fix-spawns ct) or "
+            "info_player_terrorist (--fix-spawns t). off by default because "
+            "the side choice is map-design-specific."
         ),
     )
     p.set_defaults(func=run)
@@ -172,8 +185,30 @@ def run(args: argparse.Namespace) -> int:
     header("Applying fixes" if not args.dry_run else "Computing fixes (dry run)")
     new_text, results = apply_all(text, analysis.findings)
     applied = [r for r in results if r.applied]
-    if not applied:
+
+    spawn_summary = ""
+    spawn_rewrites = 0
+    if args.fix_spawns:
+        from ..fixers.spawns import fix_legacy_spawns
+
+        new_text, spawn_rewrites, spawn_summary = fix_legacy_spawns(new_text, args.fix_spawns)
+        if spawn_rewrites:
+            success(f"--fix-spawns {args.fix_spawns}: {spawn_summary}")
+        else:
+            info(f"--fix-spawns {args.fix_spawns}: {spawn_summary}")
+
+    if not applied and spawn_rewrites == 0:
         warn("No fixes applied (no fixers matched the findings).")
+        return 1
+
+    # round-trip safety check: re-parse the post-fix text and refuse to
+    # write if structure broke. catches malformed text replaces before
+    # they hit disk, which is otherwise the kind of "vmf is corrupt and
+    # the importer's error doesn't say why" failure mode users hit.
+    rt = verify_roundtrip(text, new_text)
+    if not rt.ok:
+        error(f"Round-trip safety check failed: {rt.reason}")
+        error("Refusing to write corrupted vmf. Original file is unchanged.")
         return 1
 
     if args.dry_run:

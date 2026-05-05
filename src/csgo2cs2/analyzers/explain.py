@@ -123,9 +123,10 @@ _EXPLANATIONS: Dict[str, Explanation] = {
             "anyone."
         ),
         fix=(
-            "manual — replace each legacy spawn with the appropriate cs2 spawn "
-            "in Hammer. Picking which side maps to which is map-design-specific, "
-            "so we don't auto-convert."
+            "opt-in — `csgo2cs2 analyze --fix --fix-spawns ct` rewrites every "
+            "legacy spawn classname to `info_player_counterterrorist` (or `t` "
+            "for `info_player_terrorist`). Off by default because the side "
+            "choice is map-design-specific."
         ),
         refs=[],
     ),
@@ -183,8 +184,8 @@ _EXPLANATIONS: Dict[str, Explanation] = {
             "doesn't rely on custom clips for footstep sounds either."
         ),
         fix=(
-            "manual — replace the custom clip with `tools/toolsclip` or "
-            "`tools/toolsplayerclip` in s1 Hammer before re-running the import."
+            "auto — `csgo2cs2 analyze --fix` rewrites the value to "
+            "`tools/toolsclip` so the brush retains its clip role on import."
         ),
         refs=[_REF_KELLER],
     ),
