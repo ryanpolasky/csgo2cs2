@@ -71,3 +71,13 @@ def test_apply_all_chains_fixers():
     assert "entity_unsupported" in applied_ids
     assert "sky_day01_01" in new_text
     assert "env_cascade_light" not in new_text
+
+
+def test_skybox_fixer_applies_to_hdr_only():
+    text = _wrap_world("sky_office_hdr")
+    a = analyze_vmf(text, default_skybox="sky_day01_01")
+    new_text, results = apply_all(text, a.findings)
+    applied_ids = {r.issue_id for r in results if r.applied}
+    assert "skybox_hdr_only" in applied_ids
+    assert "sky_day01_01" in new_text
+    assert "sky_office_hdr" not in new_text

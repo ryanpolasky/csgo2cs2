@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 DEFAULT_CONFIG_DIR = Path.home() / ".csgo2cs2"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
@@ -34,6 +34,12 @@ class Config:
 
     # defaults applied during fixes
     default_skybox: str = "sky_day01_01"
+
+    # override the analyzer's known-good CS2 sky list. None = use built-in.
+    cs2_sky_list: Optional[List[str]] = None
+
+    # extra unsupported entity classnames the analyzer should flag (additive)
+    extra_unsupported_entities: List[str] = field(default_factory=list)
 
     # steam username only; never store passwords here
     steam_login: Optional[str] = None
