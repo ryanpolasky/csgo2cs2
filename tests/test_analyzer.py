@@ -277,7 +277,8 @@ entity
     ]
     assert len(dep) == 1
     assert dep[0].severity == "info"
-    assert dep[0].fixable is False
+    # PR4: deprecated_s2 is now fixable (`--fix` strips dead-weight entities).
+    assert dep[0].fixable is True
 
 
 def test_color_correction_volume_flagged_deprecated():

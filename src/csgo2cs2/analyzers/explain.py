@@ -129,8 +129,8 @@ _EXPLANATIONS: Dict[str, Explanation] = {
         ),
         why=(
             "Source 2 replaced visibility (areaportals/occluders), fog, and "
-            "color correction with new systems. The old entities import but "
-            "have no effect."
+            "color correction with new systems. The old entities import as "
+            "no-ops."
         ),
         fix=(
             "manual — after import, delete these in Hammer 2 and use the cs2 "
@@ -158,7 +158,11 @@ _EXPLANATIONS: Dict[str, Explanation] = {
             "CS2's vrad expects exactly one. Extras are ignored, but they "
             "indicate a copy-paste / legacy issue worth cleaning up."
         ),
-        fix="manual — pick one and delete the rest in Hammer.",
+        fix=(
+            "auto — `csgo2cs2 analyze --fix` keeps the first `light_environment` "
+            "and removes the rest. If the wrong one wins, edit the .vmf so the "
+            "keeper is the first to appear in the file before re-running."
+        ),
         refs=[],
     ),
     "texture_clip_custom": Explanation(
@@ -212,7 +216,10 @@ _EXPLANATIONS: Dict[str, Explanation] = {
             "Mostly cosmetic on Windows, but breaks on case-sensitive "
             "filesystems and is a sign the path was authored on a different OS."
         ),
-        fix="manual — convert backslashes to forward slashes in the .vmf.",
+        fix=(
+            "auto — `csgo2cs2 analyze --fix` rewrites each flagged path's "
+            "backslashes as forward slashes inside the quoted .vmf value."
+        ),
         refs=[],
     ),
     "asset_path_csgo_subfolder": Explanation(

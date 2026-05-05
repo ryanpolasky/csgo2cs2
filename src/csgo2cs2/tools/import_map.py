@@ -46,18 +46,16 @@ class ImportMapTool:
         p = Path(self.importer_path)
         return p if p.exists() else None
 
-    # invoke the importer with the canonical 5 positional args plus optional flags.
-    # see https://github.com/andreaskeller96/cs2-import-scripts (essentially valve's
-    # script with python 3 fixes).
-    def import_map(
+    # build the importer command line without running it. exposed so the
+    # `port --dry-run` path can show users exactly what would execute.
+    def build_command(
         self,
         inputs: ImportInputs,
         use_bsp: bool = True,
         no_merge_instances: bool = False,
         skip_deps: bool = False,
         extra_args: Optional[Sequence[str]] = None,
-    ) -> subprocess.CompletedProcess:
-        require_windows("import_map_community.py")
+    ) -> list[str]:
         importer = self.resolve()
         if not importer:
             raise RuntimeError("import_map_community.py not configured. Set the path in config.")
@@ -78,4 +76,25 @@ class ImportMapTool:
             cmd.append("-skipdeps")
         if extra_args:
             cmd.extend(extra_args)
+        return cmd
+
+    # invoke the importer with the canonical 5 positional args plus optional flags.
+    # see https://github.com/andreaskeller96/cs2-import-scripts (essentially valve's
+    # script with python 3 fixes).
+    def import_map(
+        self,
+        inputs: ImportInputs,
+        use_bsp: bool = True,
+        no_merge_instances: bool = False,
+        skip_deps: bool = False,
+        extra_args: Optional[Sequence[str]] = None,
+    ) -> subprocess.CompletedProcess:
+        require_windows("import_map_community.py")
+        cmd = self.build_command(
+            inputs,
+            use_bsp=use_bsp,
+            no_merge_instances=no_merge_instances,
+            skip_deps=skip_deps,
+            extra_args=extra_args,
+        )
         return subprocess.run(cmd, check=False, capture_output=True, text=True)

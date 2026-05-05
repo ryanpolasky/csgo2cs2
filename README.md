@@ -20,9 +20,12 @@ workshop url
   -> BSP inspector          (header + bspprotect detection + pakfile inventory)
   -> VPKEdit / BSPZIP       (extract packed bsp content)
   -> BSPSource              (decompile .bsp -> .vmf)
-  -> VMF analyzer + fixers  (skybox, hdr-only sky, unsupported entities,
-                             legacy spawns, asset-path issues)
+  -> VMF analyzer + fixers  (skybox, hdr-only sky, unsupported / deprecated
+                             entities, light_environment dedupe, asset-path
+                             issues, custom clip textures, etc.)
   -> stage <s1_content>/maps/<mapname>.vmf  (no spaces in path)
+  -> pre-copy pakfile assets into <s1_content>/  (materials, models, sound,
+                                                   scripts, particles, resource)
   -> import_map_community.py    (windows-only, 5 positional args + flags)
   -> manifest + report      (track install-side mutations)
   -> cleanup                (reverse copies/patches/renames)
@@ -88,16 +91,18 @@ csgo2cs2 doctor --unfix                         # reverse install patches (VAC-s
 csgo2cs2 download "<workshop-url-or-id>"        # download via steamcmd
 csgo2cs2 decompile <bsp-path>                   # bspsource decompile
 csgo2cs2 analyze <vmf-path>                     # report vmf issues
-csgo2cs2 analyze <vmf-path> --fix               # apply auto-fixes (skybox, entities)
+csgo2cs2 analyze <vmf-path> --fix               # apply auto-fixes (skybox, entities, paths, etc.)
+csgo2cs2 analyze <vmf-path> --fix --dry-run     # preview the unified diff of --fix without writing
 csgo2cs2 analyze <vmf-path> --bsp <bsp-path>    # also include bsp header + pakfile audit
 csgo2cs2 analyze <vmf-path> --explain           # print curated what/why/fix per finding
 csgo2cs2 analyze <vmf-path> --report-json       # machine-readable findings on stdout
 csgo2cs2 analyze <vmf-path> --report-json out.json  # write findings to a file
 csgo2cs2 explain <issue_id>                     # standalone explanation for one finding
 csgo2cs2 explain --list                         # list every issue_id with a curated entry
-csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --auto   # full pipeline (windows)
-csgo2cs2 port --bsp ./local.bsp --addon my_addon --auto        # skip steamcmd, use a local file
-csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --skip-import   # cross-os dry run
+csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --auto              # full pipeline (windows)
+csgo2cs2 port --bsp ./local.bsp --addon my_addon --auto                   # skip steamcmd, use a local file
+csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --skip-import       # cross-os dry run
+csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --auto --dry-run    # show fixer plan + would-run importer cmd
 csgo2cs2 list                                   # list prior ports under workspace_dir
 csgo2cs2 status "<workshop-url-or-id>"          # show one port's manifest
 csgo2cs2 cleanup "<workshop-url-or-id>"         # undo install-side mutations
@@ -116,13 +121,13 @@ into `jq` via `--report-json`. Current set:
 | `skybox_missing`            | warn     | no      | no `skyname` key in worldspawn                                             |
 | `entity_unsupported`        | warn     | yes     | classname is in `UNSUPPORTED_ENTITIES` + extras from config                |
 | `entity_legacy_spawn`       | warn     | no      | DOD-era / Source 1 spawns instead of CS2 team spawns                       |
-| `entity_deprecated_s2`      | info     | no      | classname has no Source 2 equivalent (areaportal, fog_controller, etc.)    |
+| `entity_deprecated_s2`      | info     | yes     | classname has no Source 2 equivalent (areaportal, fog_controller, etc.)    |
 | `missing_spawn`             | warn     | no      | no `info_player_terrorist` or `info_player_counterterrorist`               |
-| `light_environment_count`   | warn     | no      | more than one `light_environment` (cs2 expects exactly one)                |
+| `light_environment_count`   | warn     | yes     | more than one `light_environment` (cs2 expects exactly one)                |
 | `texture_clip_custom`       | warn     | no      | custom clip texture (importer drops anything outside `tools/toolsclip*`)   |
 | `asset_path_space`          | error    | no      | a material/model path contains a space                                     |
 | `asset_path_absolute`       | error    | no      | a material/model path uses a Windows drive letter                          |
-| `asset_path_backslash`      | warn     | no      | a material/model path uses backslashes                                     |
+| `asset_path_backslash`      | warn     | yes     | a material/model path uses backslashes                                     |
 | `asset_path_csgo_subfolder` | warn     | no      | a material/model path lives under a folder literally named `csgo/`         |
 | `manual_rebuild_cubemaps`   | info     | no      | env_cubemap entities or pakfile cubemap assets present (run buildcubemaps) |
 | `manual_review_soundscapes` | info     | no      | soundscape/ambient entities or `scripts/soundscapes_*.txt` in pakfile      |
@@ -143,6 +148,36 @@ for each id; `csgo2cs2 analyze --explain` does the same inline for every
 finding the analyzer surfaced. The text is offline and deterministic — see
 [Prior art & attributions](#prior-art--attributions) for the source material.
 
+## Pakfile asset pre-copy
+
+Real workshop maps usually embed custom `materials/`, `models/`, and `sound/`
+files inside the bsp's pakfile. Valve's import script resolves asset paths
+relative to the s1 *content* tree, so without those custom assets in place
+the import aborts on the first missing `.vmt` / `.mdl` / `.wav`.
+
+`csgo2cs2 port` now extracts the pakfile (via VPKEdit or BSPZIP) and
+pre-copies the recognized subdirectories (`materials`, `models`, `sound`,
+`scripts`, `particles`, `resource`) into the staged content tree before
+invoking the importer. This collapses the most common manual cleanup step
+to zero work.
+
+The pre-copy is a no-op when `extracted/` is empty (e.g. base-asset-only
+maps) and skips files that already exist at the same size in the staged
+tree, so re-running `port` on a workspace is cheap.
+
+## Dry runs
+
+Two `--dry-run` flags let you preview changes before they hit disk:
+
+- `csgo2cs2 analyze <vmf> --fix --dry-run` runs the fixers in memory and
+  prints a unified diff of the resulting `.vmf`. Nothing is written, no
+  `.csgo2cs2.bak` is created. Use this to audit the fixer output before
+  committing to it.
+- `csgo2cs2 port <id> --addon <name> --dry-run` runs the full
+  download / decompile / analyze flow but stops short of the cs2 import.
+  It prints the asset pre-copy plan and the exact importer command it
+  would run, so you can copy-paste it manually if you want to.
+
 ## Known Limitations
 
 - **windows-only `port`.** decompile fidelity is bounded by BSPSource: brushwork,
@@ -153,6 +188,10 @@ finding the analyzer surfaced. The text is offline and deterministic — see
   cleanly and need to be regenerated in Hammer 2 — the analyzer surfaces this
   as `manual_rebuild_*` / `manual_review_*` info findings when it can detect
   the relevant entities or pakfile contents.
+- **legacy spawns** (`info_player_axis`, `info_player_allies`, etc.) are not
+  auto-converted because the side mapping (CT vs. T) is map-design-specific.
+  The analyzer flags them as `entity_legacy_spawn` warnings; remap them in
+  Hammer before re-running the import.
 - **anonymous steamcmd downloads** for app `730` are unreliable; an authenticated
   Steam login may be required.
 
@@ -232,9 +271,12 @@ src/csgo2cs2/
     explain.py           # curated what/why/fix registry per issue_id
   fixers/                # registered auto-fixers
     base.py              # registry + apply_all
-    skybox.py
-    entities.py
+    skybox.py            # skybox_unknown / skybox_hdr_only
+    entities.py          # entity_unsupported / entity_deprecated_s2
+    asset_paths.py       # asset_path_backslash
+    light_environment.py # light_environment_count dedupe
   utils/                 # url, paths, backup, manifest, steam, downloader,
                          #   tools_registry helpers
 tests/                   # pytest suite
+  fixtures/              # check-in vmf samples for snapshot tests
 ```

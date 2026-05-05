@@ -71,3 +71,7 @@ def remove_unsupported_entity(text: str, finding: Finding) -> Tuple[str, bool, s
 
 
 base.register("entity_unsupported", remove_unsupported_entity)
+# source 2 deprecated entities are dead weight after import. same removal logic
+# as `entity_unsupported`; the analyzer keeps the issue_ids distinct so the
+# severity / explanation can stay specific.
+base.register("entity_deprecated_s2", remove_unsupported_entity)
