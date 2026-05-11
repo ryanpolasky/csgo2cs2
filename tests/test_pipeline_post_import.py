@@ -11,6 +11,7 @@ from csgo2cs2.config import Config
 from csgo2cs2.pipeline import (
     _CONTENTDIR_MARKER,
     _collect_staged_refs,
+    _collect_vmf_refs,
     _content_addon_maps_dir,
     _ensure_prefab_refs_stub,
     _format_refs_kv,
@@ -71,17 +72,21 @@ def test_ensure_prefab_refs_stub_creates_empty_kv(tmp_path):
     assert '"file"' not in text
 
 
-def test_ensure_prefab_refs_stub_preserves_populated_refs(tmp_path):
+def test_ensure_prefab_refs_stub_overwrites_existing_refs(tmp_path):
+    # We always rewrite the refs file from the current staged + .vmf
+    # inputs because we run *before* source1import on each port. Stale
+    # refs from prior runs would mask freshly-collected ones.
     cfg = _cfg_with_addons(tmp_path)
     maps_dir = _content_addon_maps_dir(cfg, "test_addon")
     assert maps_dir is not None
     maps_dir.mkdir(parents=True)
     stub = maps_dir / "recoil_master_prefab_refs.txt"
-    # Simulate source1import having already written populated refs.
-    populated = 'importfilelist\n{\n\t"file" "models/foo.mdl"\n}\n'
-    stub.write_text(populated)
+    stub.write_text('importfilelist\n{\n\t"file" "models/stale.mdl"\n}\n')
     _ensure_prefab_refs_stub(cfg, "test_addon", "recoil_master")
-    assert stub.read_text() == populated  # untouched
+    text = stub.read_text()
+    assert "importfilelist" in text
+    assert "models/stale.mdl" not in text  # stale refs are discarded
+    assert '"file"' not in text  # empty stub since no inputs supplied
 
 
 def test_ensure_prefab_refs_stub_no_op_without_addons_path():
@@ -173,21 +178,85 @@ def test_write_prefab_refs_from_staged_overwrites_empty_kv_stub(tmp_path):
     assert '"file" "materials/recoil_master/x.vmt"' in out.read_text()
 
 
-def test_write_prefab_refs_from_staged_skips_when_populated(tmp_path):
+def test_collect_vmf_refs_extracts_materials_and_models(tmp_path):
+    # Synthetic .vmf body covers the shapes encountered in real maps:
+    # bare material refs, all-caps material refs, model refs with .mdl,
+    # tools/* refs to be filtered out, and an extra-quoted .vmt suffix.
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text(
+        'solid\n{\n  side\n  {\n    "material" "METAL/METALCOMBINE002"\n  }\n}\n'
+        'side\n{\n  "material" "wood/wood_int_10"\n}\n'
+        'side\n{\n  "material" "tools/toolsclip"\n}\n'
+        'side\n{\n  "material" "metal/hr_metal/hr_metal_wall_a.vmt"\n}\n'
+        'entity\n{\n  "model" "models/weapons/w_pist_glock18.mdl"\n}\n'
+        'entity\n{\n  "model" "models/props/foo"\n}\n'
+        'entity\n{\n  "model" "props/no_models_prefix.mdl"\n}\n',
+        encoding="utf-8",
+    )
+    refs = _collect_vmf_refs(vmf)
+    assert refs == [
+        "materials/metal/hr_metal/hr_metal_wall_a.vmt",
+        "materials/metal/metalcombine002.vmt",
+        "materials/wood/wood_int_10.vmt",
+        "models/props/foo.mdl",
+        "models/props/no_models_prefix.mdl",
+        "models/weapons/w_pist_glock18.mdl",
+    ]
+
+
+def test_collect_vmf_refs_missing_file_returns_empty(tmp_path):
+    assert _collect_vmf_refs(tmp_path / "nope.vmf") == []
+
+
+def test_write_prefab_refs_from_staged_merges_vmf_refs(tmp_path):
+    cfg = _cfg_with_addons(tmp_path)
+    staged = tmp_path / "staged"
+    (staged / "materials" / "recoil_master").mkdir(parents=True)
+    (staged / "materials" / "recoil_master" / "icon.vmt").write_text("")
+    vmf = staged / "maps" / "recoil_master.vmf"
+    vmf.parent.mkdir(parents=True)
+    vmf.write_text(
+        'side\n{\n  "material" "metal/metalcombine002"\n}\n'
+        'entity\n{\n  "model" "models/weapons/w_pist_glock18.mdl"\n}\n',
+        encoding="utf-8",
+    )
+    n = _write_prefab_refs_from_staged(cfg, "test_addon", "recoil_master", staged, vmf)
+    # Both staged refs and VMF-referenced refs end up in the output.
+    assert n == 3
+    out = (
+        tmp_path
+        / "Counter-Strike Global Offensive"
+        / "content"
+        / "csgo_addons"
+        / "test_addon"
+        / "maps"
+        / "recoil_master_prefab_refs.txt"
+    )
+    text = out.read_text()
+    assert '"file" "materials/recoil_master/icon.vmt"' in text
+    assert '"file" "materials/metal/metalcombine002.vmt"' in text
+    assert '"file" "models/weapons/w_pist_glock18.mdl"' in text
+
+
+def test_write_prefab_refs_from_staged_overwrites_existing_populated(tmp_path):
+    # Re-running `csgo2cs2 port` must refresh the refs file from the
+    # current staged + .vmf inputs. Source1import never runs before us,
+    # so we can't be racing its output.
     cfg = _cfg_with_addons(tmp_path)
     maps_dir = _content_addon_maps_dir(cfg, "test_addon")
     assert maps_dir is not None
     maps_dir.mkdir(parents=True)
     out = maps_dir / "recoil_master_prefab_refs.txt"
-    populated = 'importfilelist\n{\n\t"file" "materials/from_s1import.vmt"\n}\n'
-    out.write_text(populated)
+    stale = 'importfilelist\n{\n\t"file" "materials/stale.vmt"\n}\n'
+    out.write_text(stale)
     staged = tmp_path / "staged"
     (staged / "materials").mkdir(parents=True)
     (staged / "materials" / "new.vmt").write_text("")
     n = _write_prefab_refs_from_staged(cfg, "test_addon", "recoil_master", staged)
-    # Existing populated refs win -- don't clobber source1import's output.
-    assert n == 0
-    assert out.read_text() == populated
+    assert n == 1
+    text = out.read_text()
+    assert '"file" "materials/new.vmt"' in text
+    assert "materials/stale.vmt" not in text
 
 
 def test_importer_success_marker_matches_canonical_line():

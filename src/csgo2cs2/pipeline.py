@@ -898,6 +898,53 @@ def _collect_staged_refs(staged_root: Path) -> list[str]:
     return refs
 
 
+# `"material" "..."` and `"model" "..."` KV pairs in a .vmf. Material
+# values are bare paths relative to materials/ with no extension (e.g.
+# `metal/metalcombine002`); model values are full paths under models/
+# with a .mdl extension (e.g. `models/weapons/w_pist_glock18.mdl`).
+_VMF_MATERIAL_RE = re.compile(r'"material"\s*"([^"\n]+)"', re.IGNORECASE)
+_VMF_MODEL_RE = re.compile(r'"model"\s*"([^"\n]+)"', re.IGNORECASE)
+
+
+def _collect_vmf_refs(vmf_path: Path) -> list[str]:
+    """Return refs-file format paths for every material/model the .vmf
+    references. Filters out tools/* materials (they're cs2-native, no
+    conversion needed) and obvious non-asset values. Sorted, deduped.
+
+    Source1import looks each ref up in the import-game search path
+    (== <csgo_install>/csgo/, which transparently mounts pak01_*.vpk).
+    Refs that resolve get converted to .vmat / .vmdl; refs that don't
+    print an error but don't block the rest of the batch."""
+    try:
+        text = vmf_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    refs: set[str] = set()
+    for m in _VMF_MATERIAL_RE.finditer(text):
+        val = m.group(1).strip().replace("\\", "/").lower()
+        if not val:
+            continue
+        # tools/ materials ship with cs2; never need s1->s2 conversion.
+        if val.startswith("tools/"):
+            continue
+        # a small number of .vmf assets reference the .vmt by extension.
+        if val.endswith(".vmt"):
+            val = val[:-4]
+        if not val:
+            continue
+        refs.add(f"materials/{val}.vmt")
+    for m in _VMF_MODEL_RE.finditer(text):
+        val = m.group(1).strip().replace("\\", "/").lower()
+        if not val:
+            continue
+        if not val.endswith(".mdl"):
+            val = f"{val}.mdl"
+        if not val.startswith("models/"):
+            val = f"models/{val}"
+        refs.add(val)
+    return sorted(refs)
+
+
 def _format_refs_kv(refs: list[str]) -> str:
     """Serialise refs in the `importfilelist { "file" "..." }` KV format
     Keller's `ListStringFromRefs` expects. Always emits a syntactically
@@ -914,6 +961,7 @@ def _write_prefab_refs_from_staged(
     addon: str,
     mapname: str,
     staged_root: Path | None = None,
+    vmf_path: Path | None = None,
 ) -> int:
     """Generate the `<map>_prefab_refs.txt` Keller's import wrapper reads
     after the initial source1import pass. The wrapper walks this file to
@@ -926,18 +974,29 @@ def _write_prefab_refs_from_staged(
     any of its workshop materials -- every face renders as a missing
     checkerboard at runtime.
 
-    We side-step that by pre-building a refs list from the staged content
-    (extracted from the .bsp pakfile + companion folders). The wrapper
-    then converts every .vmt to .vmat and compiles every .vmat to .vmat_c
-    so the final map renders.
+    Two ref sources are merged into the output:
+      1. files found under `staged_root` -- workshop content extracted
+         from the .bsp pakfile.
+      2. `"material"` / `"model"` values read straight out of the .vmf --
+         every asset the map *references*, including base CSGO assets
+         (metalcombine002, w_pist_glock18, etc.) and external dependency
+         packs (hr_metal, gg_tibet, ...) that aren't part of the .bsp
+         pakfile but *are* on disk inside `<csgo>/pak01_*.vpk`.
+    Source1import resolves each ref against the import-game search path
+    (which mounts the csgo install's vpks transparently); whatever it
+    finds becomes a .vmat / .vmdl in the addon, whatever it can't print
+    a per-ref error and the rest of the batch continues.
 
     Returns the number of refs written. An empty refs list still produces
     a well-formed empty KV stub for the no-prefab + no-pakfile-content
     case (matches the prior `_ensure_prefab_refs_stub` behaviour).
 
-    Idempotent: when an existing file has non-zero size *and* a populated
-    `importfilelist` block (i.e. source1import already wrote real refs),
-    we don't overwrite it."""
+    Overwrites any pre-existing file. We re-run on every `csgo2cs2 port`,
+    so refreshing the refs is correct -- the .vmf may have changed, the
+    staged set may have changed, or this script may have learned to emit
+    new ref kinds since the last run. (Source1import overwrites this
+    file later in the importer for prefab maps anyway, so we never race
+    with its output -- we always run *before* the importer.)"""
     maps_dir = _content_addon_maps_dir(cfg, addon)
     if maps_dir is None:
         return 0
@@ -949,17 +1008,12 @@ def _write_prefab_refs_from_staged(
         # case, so don't fail the pipeline here.
         return 0
     out = maps_dir / f"{mapname}_prefab_refs.txt"
-    if out.exists() and out.stat().st_size > 0:
-        # If source1import already wrote populated refs, don't clobber.
-        try:
-            existing = out.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            existing = ""
-        if '"file"' in existing:
-            return 0
-    refs: list[str] = []
+    merged: set[str] = set()
     if staged_root is not None and staged_root.is_dir():
-        refs = _collect_staged_refs(staged_root)
+        merged.update(_collect_staged_refs(staged_root))
+    if vmf_path is not None and vmf_path.is_file():
+        merged.update(_collect_vmf_refs(vmf_path))
+    refs = sorted(merged)
     try:
         out.write_text(_format_refs_kv(refs), encoding="utf-8")
     except OSError:
@@ -969,7 +1023,7 @@ def _write_prefab_refs_from_staged(
 
 def _ensure_prefab_refs_stub(cfg: Config, addon: str, mapname: str) -> None:
     """Back-compat wrapper around `_write_prefab_refs_from_staged` for
-    callers that don't have a staged root handy (tests, dry-runs).
+    callers that don't have a staged root or .vmf handy (tests, dry-runs).
     Writes an empty KV stub."""
     _write_prefab_refs_from_staged(cfg, addon, mapname, staged_root=None)
 
@@ -1243,13 +1297,22 @@ def _stage_and_import(
     # and (a) the wrapper crashes with FileNotFoundError, OR (b) we ship
     # a stub but the per-asset conversion phase no-ops -- yielding a map
     # whose textures all render as missing checkerboards in CS2.
-    # Populating it from staged/ drives the real .vmt->.vmat->.vmat_c
-    # conversion + .mdl->.vmdl->.vmdl_c conversion the map needs.
-    n_refs = _write_prefab_refs_from_staged(cfg, addon, mapname, s1_content_dir)
+    # Populating it from staged/ + the .vmf's material/model references
+    # drives the real .vmt->.vmat->.vmat_c conversion + .mdl->.vmdl->.vmdl_c
+    # conversion the map needs. The .vmf refs catch base CSGO assets the
+    # map uses (metalcombine002, wood_int_10, w_pist_*, ...) that aren't
+    # in the .bsp pakfile but live in the user's csgo/pak01_*.vpk -- so
+    # source1import resolves them against the import-game search path and
+    # converts them too.
+    vmf_for_refs = s1_content_dir / "maps" / f"{mapname}.vmf"
+    if not vmf_for_refs.is_file():
+        vmf_for_refs = None  # type: ignore[assignment]
+    n_refs = _write_prefab_refs_from_staged(cfg, addon, mapname, s1_content_dir, vmf_for_refs)
     if n_refs:
         info(
-            f"Wrote {n_refs} staged ref(s) to {mapname}_prefab_refs.txt "
-            "for per-asset s1->s2 conversion."
+            f"Wrote {n_refs} ref(s) to {mapname}_prefab_refs.txt for "
+            "per-asset s1->s2 conversion (staged content + .vmf material "
+            "+ model references)."
         )
 
     info(f"Invoking import_map_community.py for `{addon}` / map `{mapname}`...")
