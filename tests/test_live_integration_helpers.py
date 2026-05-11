@@ -168,11 +168,18 @@ def test_unwrap_legacy_bin_rejects_zip_without_bsp(tmp_path: Path) -> None:
 # ---- candidate-dir probing --------------------------------------------------
 
 
+def _stub_home(monkeypatch, fake_home: Path) -> None:
+    """Force `Path.home()` to return `fake_home`. We can't just set
+    HOME because Windows uses USERPROFILE and falls back to
+    HOMEDRIVE+HOMEPATH; patching `Path.home` directly is the only
+    platform-agnostic option."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+
 def test_candidate_dirs_returns_expected_then_home_fallback(tmp_path: Path, monkeypatch) -> None:
     """The probe should return SteamCMD's nominal workshop path first
     and the ~/Steam/... fallback second."""
     mod = _load_live_port()
-    # we use a stub SteamCMD so we don't touch real config.
     fake_root = tmp_path / "tools" / "steamcmd"
     fake_root.mkdir(parents=True)
     expected = fake_root / "steamapps" / "workshop" / "content" / "730" / "X"
@@ -182,19 +189,22 @@ def test_candidate_dirs_returns_expected_then_home_fallback(tmp_path: Path, monk
         def expected_workshop_path(self, wid: str) -> Path:
             return expected
 
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    fake_home = tmp_path / "home"
+    _stub_home(monkeypatch, fake_home)
     out = mod._candidate_workshop_dirs(_Stub(), "X")
     assert out[0] == expected
-    # second slot is the home-relative fallback (regardless of whether
-    # it currently exists on disk).
-    assert any("Steam/steamapps/workshop/content/730/X" in str(p) for p in out[1:])
+    # second slot is the home-relative fallback. compare paths as
+    # `Path` objects so trailing-slash and path-separator differences
+    # don't matter across linux/windows.
+    expected_fallback = fake_home / "Steam" / "steamapps" / "workshop" / "content" / "730" / "X"
+    assert any(p == expected_fallback for p in out[1:])
 
 
 def test_candidate_dirs_dedupes_identical_paths(tmp_path: Path, monkeypatch) -> None:
     """If a tool config happens to point at the same path as the home
     fallback, the probe should only list it once."""
     mod = _load_live_port()
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _stub_home(monkeypatch, tmp_path)
     shared = tmp_path / "Steam" / "steamapps" / "workshop" / "content" / "730" / "X"
 
     class _Stub:
