@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
@@ -36,15 +35,10 @@ class ImportMapTool:
     def __init__(
         self,
         importer_path: Optional[str] = None,
-        python_executable: Optional[str] = None,
+        python_executable: str = "python",
     ) -> None:
         self.importer_path = importer_path
-        # Default to the *same* Python that's running csgo2cs2. The previous
-        # default ("python") leaned on $PATH resolution, which on Windows
-        # routinely picked up the Store stub or a system 3.11 lacking our
-        # deps -- the importer would crash on `import colorama` before it
-        # could do anything useful.
-        self.python_executable = python_executable or sys.executable
+        self.python_executable = python_executable
 
     def resolve(self) -> Optional[Path]:
         if not self.importer_path:

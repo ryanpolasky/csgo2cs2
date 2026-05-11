@@ -772,7 +772,7 @@ def _print_dry_run_plan(
     importer_path = _resolve_importer_path(cfg) or "<not configured>"
     importer = ImportMapTool(
         importer_path=importer_path if importer_path != "<not configured>" else None,
-        python_executable=cfg.python_executable,
+        python_executable=cfg.python_executable or "python",
     )
     inputs = ImportInputs(
         s1_gameinfo_dir=s1_gameinfo_dir,
@@ -840,7 +840,7 @@ def _stage_and_import(
     importer_path = _resolve_importer_path(cfg)
     importer = ImportMapTool(
         importer_path=importer_path,
-        python_executable=cfg.python_executable,
+        python_executable=cfg.python_executable or "python",
     )
     if not importer.resolve():
         error(

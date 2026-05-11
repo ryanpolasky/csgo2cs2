@@ -461,32 +461,7 @@ def try_autofix_interactive(
         print_fn(f"refusing: {chosen} is not writable.")
         return False
 
-    # Carry forward the drift-state file. doctor --fix stashes it under
-    # the OLD workspace_dir; without this migration the subsequent
-    # preflight on the NEW workspace_dir flags `install_patches_not_applied`
-    # even though they were applied minutes ago.
-    _migrate_drift_state(Path(cfg.workspace_dir).expanduser(), chosen, print_fn)
-
     cfg.workspace_dir = str(chosen)
     save_config(cfg, config_path)
     print_fn(f"workspace_dir updated to {chosen} and persisted to config.")
     return True
-
-
-def _migrate_drift_state(old_workspace: Path, new_workspace: Path, print_fn) -> None:
-    from .drift import DRIFT_STATE_FILENAME
-
-    src = old_workspace / DRIFT_STATE_FILENAME
-    if not src.exists():
-        return
-    dst = new_workspace / DRIFT_STATE_FILENAME
-    if dst.exists():
-        # don't clobber a more recent state at the new location
-        return
-    try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(src.read_bytes())
-    except OSError as exc:
-        # non-fatal -- worst case the user sees the install_patches_not_applied
-        # warning and re-runs `csgo2cs2 doctor --fix`.
-        print_fn(f"note: could not migrate drift state ({exc}); continuing.")

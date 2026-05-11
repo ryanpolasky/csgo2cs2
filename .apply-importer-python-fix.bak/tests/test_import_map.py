@@ -128,32 +128,3 @@ def test_import_map_command_shape_no_use_bsp(tmp_path):
     cmd = captured["cmd"]
     assert "-usebsp" not in cmd
     assert "-usebsp_nomergeinstances" not in cmd
-
-
-def test_import_map_default_python_executable_is_current_interpreter(tmp_path):
-    """Regression for the Windows colorama crash: when the user hasn't
-    set `python_executable` in their config, we must NOT shell out as a
-    bare `python` (which resolves via PATH, frequently to a different
-    interpreter than the one running csgo2cs2). Default to sys.executable
-    so the importer inherits our exact site-packages."""
-    importer = _resolved_importer(tmp_path)
-    tool = ImportMapTool(importer_path=str(importer))
-    cmd = tool.build_command(_inputs(tmp_path))
-    assert cmd[0] == sys.executable
-
-
-def test_import_map_explicit_python_executable_wins(tmp_path):
-    """An explicit `python_executable` (config override) is preserved."""
-    importer = _resolved_importer(tmp_path)
-    tool = ImportMapTool(importer_path=str(importer), python_executable="C:/Other/python.exe")
-    cmd = tool.build_command(_inputs(tmp_path))
-    assert cmd[0] == "C:/Other/python.exe"
-
-
-def test_import_map_none_python_executable_falls_back(tmp_path):
-    """Passing explicit None (e.g. cfg.python_executable when unset)
-    should be treated the same as omitting the arg."""
-    importer = _resolved_importer(tmp_path)
-    tool = ImportMapTool(importer_path=str(importer), python_executable=None)
-    cmd = tool.build_command(_inputs(tmp_path))
-    assert cmd[0] == sys.executable
