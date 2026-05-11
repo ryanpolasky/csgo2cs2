@@ -83,8 +83,21 @@ def _extract_archive(archive: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     name = archive.name.lower()
     if name.endswith(".zip"):
+        # zipfile.extractall discards POSIX perms; restore the +x bit
+        # for any file the zip explicitly stored as executable.
+        # this matters for tools like bspsource that ship a bundled
+        # jre under bin/, where bin/java needs +x to actually run.
         with zipfile.ZipFile(archive) as zf:
-            zf.extractall(dest)
+            for info in zf.infolist():
+                out_path = Path(zf.extract(info, dest))
+                if sys.platform.startswith("win") or info.is_dir():
+                    continue
+                perm = (info.external_attr >> 16) & 0o777
+                if perm:
+                    try:
+                        out_path.chmod(perm)
+                    except OSError:
+                        pass
         return
     if name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(archive, "r:gz") as tf:

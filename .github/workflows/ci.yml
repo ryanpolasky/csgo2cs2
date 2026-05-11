@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # weekly live-integration sweep on saturdays at 04:17 UTC.
+    # catches steam-side regressions (workshop api contract changes,
+    # bspsource jar updates) without requiring any code change.
+    - cron: "17 4 * * 6"
+  workflow_dispatch:
+    # manual trigger for one-off live runs.
 
 permissions:
   contents: read
@@ -48,3 +55,92 @@ jobs:
         run: ruff check src tests
       - name: ruff format --check
         run: ruff format --check src tests
+
+  integration:
+    # live test that contacts steam + runs real bspsource. expensive
+    # and steam-flaky, so it does NOT run on every PR -- only on:
+    #   - push to main
+    #   - the weekly schedule
+    #   - explicit workflow_dispatch trigger
+    #   - PRs that include "[live-test]" in the head commit message
+    name: live integration (steam + bspsource)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.title, '[live-test]'))
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Java (for BSPSource)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install SteamCMD prerequisites (32-bit libs)
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            lib32gcc-s1 lib32stdc++6 ca-certificates curl unzip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Cache csgo2cs2 tools (steamcmd + bspsource)
+        id: cache-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.csgo2cs2/tools
+          key: csgo2cs2-tools-${{ runner.os }}-v1
+
+      - name: Cache SteamCMD workshop downloads
+        # workshop content lives under steamcmd's install root; caching
+        # it means a re-run does not re-pay for the steam download. the
+        # cache key intentionally pins the workshop ID so a swap forces
+        # a fresh download.
+        uses: actions/cache@v4
+        with:
+          path: ~/.csgo2cs2/tools/steamcmd/**/steamapps/workshop
+          key: csgo2cs2-workshop-${{ env.CSGO2CS2_LIVE_TEST_WORKSHOP_ID || '419404847' }}-v1
+
+      - name: Install external tools (steamcmd, bspsource, importer)
+        # idempotent: if the tools cache hit, this is fast.
+        run: |
+          python -m csgo2cs2 init
+          python -m csgo2cs2 tools install steamcmd bspsource
+
+      - name: Show tool paths
+        run: python -m csgo2cs2 doctor || true
+
+      - name: Run live integration tests
+        env:
+          CSGO2CS2_LIVE_TEST: "1"
+          # override these to point at a specific map or a different
+          # tools install:
+          # CSGO2CS2_LIVE_TEST_WORKSHOP_ID: "121090180"
+          # CSGO2CS2_LIVE_STEAMCMD_PATH: ""
+          # CSGO2CS2_LIVE_BSPSOURCE_PATH: ""
+        run: python -m pytest -q tests/integration/ -v
+
+      - name: Upload run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csgo2cs2-run-logs
+          path: |
+            ~/.csgo2cs2/workspace/logs/
+            ~/.csgo2cs2/workspace/bug-reports/
+          if-no-files-found: ignore
+          retention-days: 14

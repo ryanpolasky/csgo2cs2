@@ -31,6 +31,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: live integration tests that contact Steam and run real BSPSource (opt-in via CSGO2CS2_LIVE_TEST=1)",
+]
 
 [tool.ruff]
 line-length = 100

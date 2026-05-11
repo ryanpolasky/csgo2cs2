@@ -42,8 +42,13 @@ class BSPSource(ToolAdapter):
             raise ToolNotFoundError("BSPSource is not configured. Set `bspsource_path` in config.")
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # bspsource's `-o` is treated as the *output file path* when only
+        # one BSP is provided (per `bspsrc --help`). Passing a directory
+        # silently produces no output. Compose the target VMF explicitly
+        # so the result lands at a predictable path on every platform.
+        out_vmf = output_dir / f"{bsp_path.stem}.vmf"
         bsp_str = str(bsp_path)
-        out_str = str(output_dir)
+        out_str = str(out_vmf)
 
         if resolved.endswith(".jar"):
             java = self._resolve_java()

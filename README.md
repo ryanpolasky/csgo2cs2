@@ -637,6 +637,63 @@ All manifests, configs, and drift state are written via
 `tempfile-then-rename` so a power loss or Ctrl-C mid-write cannot
 corrupt them. The previous contents survive any rename failure.
 
+## Live integration test
+
+The regular `pytest -q` suite mocks every external tool, which means a
+Steam-side regression (Workshop API contract change, anonymous download
+throttle, BSPSource JAR update breakage, SteamCMD output drift)
+wouldn't be caught until a user hits it. The `tests/integration/`
+directory holds a small, opt-in live test that exercises the real
+`SteamCMD → BSPSource → analyze_vmf` chain against a public CS:GO
+workshop map.
+
+The live test is gated behind `CSGO2CS2_LIVE_TEST=1`. Without that env
+var set, `pytest -q` skips both live tests with no side effects, no
+network calls, and no external tool requirements.
+
+```bash
+# normal: live tests skipped
+pytest -q tests/integration/         # 2 skipped
+
+# opt-in locally (requires steamcmd + java + bspsource on the host):
+CSGO2CS2_LIVE_TEST=1 pytest -q tests/integration/
+
+# override the default workshop map if Steam ever drops it:
+CSGO2CS2_LIVE_TEST=1 \
+CSGO2CS2_LIVE_TEST_WORKSHOP_ID=419404847 \
+  pytest -q tests/integration/
+
+# override the per-download timeout (default 600s):
+CSGO2CS2_LIVE_TEST_TIMEOUT=900 pytest -q tests/integration/
+```
+
+The live job runs in GitHub Actions on push to `main`, on a weekly
+schedule (Saturday 04:17 UTC), via manual `workflow_dispatch`, and on
+PRs whose title contains `[live-test]`. It is intentionally **not**
+gated on every PR — Steam is flaky enough that running the live test
+on every commit produces enough false reds to be noise.
+
+Steam-side transients (rate limits, "workshop item temporarily
+unavailable", login throttles) are reported as `xfail`, not `fail`, so
+a bad Steam day cannot break CI. Real regressions in our adapter glue
+(wrong path, contract drift, BSPSource invocation broken) come through
+as normal failures. *Permanent* workshop errors (item deleted, ID
+invalid, "Access Denied") fail loudly rather than xfail-quietly, since
+the right fix is to pick a different default map rather than retry.
+
+The first run of the live test caught two real production bugs that
+PR8 also fixes:
+
+- `tools install` on Linux extracted the bundled JRE under
+  `bspsource/bin/` without preserving the +x bit, so `bspsrc.sh` died
+  with `bin/java: Permission denied` on every Linux install.
+  `_extract_archive` now restores the POSIX permissions stored in
+  the zip entry's `external_attr`.
+- The BSPSource adapter passed the output *directory* to `bspsrc -o`,
+  which the tool treats as a *file path* when only one BSP is
+  provided. The decompile succeeded silently and produced no `.vmf`.
+  The adapter now composes the explicit `<dir>/<bsp.stem>.vmf` path.
+
 ## Known limitations
 
 - **Windows-only `port`.** Decompile fidelity is bounded by BSPSource:
@@ -733,6 +790,7 @@ src/csgo2cs2/
                          #   tools_registry, workshop_meta, addoninfo, drift,
                          #   atomic, long_path, retry, run_log, known_errors,
                          #   preflight helpers
-tests/                   # pytest suite
+tests/                   # pytest suite (mocked; runs on every PR)
+  integration/           # live Steam + BSPSource tests; gated on CSGO2CS2_LIVE_TEST=1
   fixtures/              # check-in VMF samples for snapshot tests
 ```
