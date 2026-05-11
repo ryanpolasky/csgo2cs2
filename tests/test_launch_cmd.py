@@ -176,5 +176,151 @@ def test_warn_when_multiple_vmaps_present(tmp_path, capsys) -> None:
     assert rc == 0
     captured = capsys.readouterr()
     # warn() writes to stderr; the cmdline preview goes to stdout.
-    assert "Multiple .vmap files" in captured.err
+    assert "Multiple maps found" in captured.err
     assert "aim_a" in captured.out  # the chosen map ends up in the cmdline
+
+
+def _fake_install_with_content(
+    tmp_path: Path,
+    addon: str,
+    *,
+    game_vmap_c: list[str] | None = None,
+    content_vmap: list[str] | None = None,
+) -> Tuple[Path, Path, Path, Path]:
+    """Like _fake_install but lets us populate the compiled `game/` side
+    and the editable `content/` side independently, mirroring the real
+    post-import layout cs2 lays down."""
+    install = tmp_path / "Counter-Strike Global Offensive"
+    bin64 = install / "game" / "bin" / "win64"
+    bin64.mkdir(parents=True)
+    (bin64 / "cs2.exe").write_text("# stub", encoding="utf-8")
+    (bin64 / "cs2").write_text("# stub", encoding="utf-8")
+    game_addon = install / "game" / "csgo_addons" / addon
+    content_addon = install / "content" / "csgo_addons" / addon
+    (game_addon / "maps").mkdir(parents=True)
+    (content_addon / "maps").mkdir(parents=True)
+    for name in game_vmap_c or []:
+        (game_addon / "maps" / f"{name}.vmap_c").write_text("# vmap_c", encoding="utf-8")
+    for name in content_vmap or []:
+        (content_addon / "maps" / f"{name}.vmap").write_text("# vmap", encoding="utf-8")
+    return install, bin64, game_addon, content_addon
+
+
+def test_resolve_content_addon_dir_swaps_game_for_content(tmp_path: Path) -> None:
+    install, bin64, game_addon, content_addon = _fake_install_with_content(
+        tmp_path, "myaddon"
+    )
+    cfg = Config(cs2_bin_path=str(bin64))
+    got = launch_cmd.resolve_content_addon_dir(cfg, "myaddon")
+    assert got == content_addon
+
+
+def test_resolve_content_addon_dir_returns_none_when_no_addon_dir() -> None:
+    assert launch_cmd.resolve_content_addon_dir(Config(), "x") is None
+
+
+def test_autodetect_finds_content_only_vmap(tmp_path: Path) -> None:
+    install, bin64, game_addon, content_addon = _fake_install_with_content(
+        tmp_path, "myaddon", game_vmap_c=[], content_vmap=["recoil_master"]
+    )
+    detected, alts = launch_cmd.autodetect_mapname(game_addon, content_addon)
+    assert detected == "recoil_master"
+    assert alts == ["recoil_master"]
+
+
+def test_autodetect_finds_compiled_vmap_c(tmp_path: Path) -> None:
+    install, bin64, game_addon, content_addon = _fake_install_with_content(
+        tmp_path, "myaddon", game_vmap_c=["aim_redline"], content_vmap=[]
+    )
+    detected, alts = launch_cmd.autodetect_mapname(game_addon, content_addon)
+    assert detected == "aim_redline"
+    assert alts == ["aim_redline"]
+
+
+def test_autodetect_unions_game_vmap_c_and_content_vmap(tmp_path: Path) -> None:
+    install, bin64, game_addon, content_addon = _fake_install_with_content(
+        tmp_path,
+        "myaddon",
+        game_vmap_c=["aim_redline"],
+        content_vmap=["recoil_master", "aim_redline"],
+    )
+    detected, alts = launch_cmd.autodetect_mapname(game_addon, content_addon)
+    # union, deduped, sorted
+    assert detected == "aim_redline"
+    assert alts == ["aim_redline", "recoil_master"]
+
+
+def test_compiled_vmap_exists_true_when_vmap_c_present(tmp_path: Path) -> None:
+    install, bin64, game_addon, _ = _fake_install_with_content(
+        tmp_path, "myaddon", game_vmap_c=["recoil_master"]
+    )
+    assert launch_cmd.compiled_vmap_exists(game_addon, "recoil_master") is True
+
+
+def test_compiled_vmap_exists_false_when_only_source_vmap(tmp_path: Path) -> None:
+    install, bin64, game_addon, _ = _fake_install_with_content(
+        tmp_path, "myaddon", content_vmap=["recoil_master"]
+    )
+    assert launch_cmd.compiled_vmap_exists(game_addon, "recoil_master") is False
+
+
+def test_source_vmap_exists_handles_none_content_dir() -> None:
+    assert launch_cmd.source_vmap_exists(None, "anything") is False
+
+
+def test_launch_errors_when_only_source_vmap_present(tmp_path, capsys) -> None:
+    """Recoil_master post-import scenario: only the .vmap source exists,
+    no .vmap_c yet. cs2.exe can't load a source .vmap; we error out with
+    actionable hammer guidance instead of silently `+map`-ing nothing."""
+    install, bin64, _, _ = _fake_install_with_content(
+        tmp_path, "test_port_01", content_vmap=["recoil_master"]
+    )
+    cfg = Config(cs2_bin_path=str(bin64))
+    cfg_path = tmp_path / "cfg.json"
+    save_config(cfg, str(cfg_path))
+    parser = build_parser()
+    args = _ns_for_launch(parser, "test_port_01", "--print-only")
+    args.config = str(cfg_path)
+    rc = args.func(args)
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "has not been built" in captured.err
+    # info() goes to stdout; warn() goes to stderr. hammer guidance is info.
+    assert "--hammer" in captured.out
+    assert "test_port_01" in captured.out
+
+
+def test_launch_hammer_mode_succeeds_with_only_source_vmap(tmp_path, capsys) -> None:
+    """`--hammer` opens workshop tools; doesn't need a compiled .vmap_c.
+    A source-only .vmap should still let hammer mode through."""
+    install, bin64, _, _ = _fake_install_with_content(
+        tmp_path, "test_port_01", content_vmap=["recoil_master"]
+    )
+    cfg = Config(cs2_bin_path=str(bin64))
+    cfg_path = tmp_path / "cfg.json"
+    save_config(cfg, str(cfg_path))
+    parser = build_parser()
+    args = _ns_for_launch(parser, "test_port_01", "--hammer", "--print-only")
+    args.config = str(cfg_path)
+    rc = args.func(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "-tools" in out
+
+
+def test_launch_succeeds_when_compiled_vmap_c_present(tmp_path, capsys) -> None:
+    install, bin64, _, _ = _fake_install_with_content(
+        tmp_path, "test_port_01", game_vmap_c=["recoil_master"]
+    )
+    cfg = Config(cs2_bin_path=str(bin64))
+    cfg_path = tmp_path / "cfg.json"
+    save_config(cfg, str(cfg_path))
+    parser = build_parser()
+    args = _ns_for_launch(parser, "test_port_01", "--print-only")
+    args.config = str(cfg_path)
+    rc = args.func(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "+map" in out
+    assert "recoil_master" in out
+

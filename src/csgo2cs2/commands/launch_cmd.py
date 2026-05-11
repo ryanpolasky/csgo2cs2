@@ -60,6 +60,25 @@ def resolve_addon_dir(cfg: Config, addon: str) -> Path | None:
     return None
 
 
+# the parallel `<install>/content/csgo_addons/<addon>` dir, where Hammer
+# stores the editable source .vmap. cs2 itself can only load the compiled
+# `.vmap_c` under `game/`, but we look at the content side too so we can
+# tell a user whose import succeeded that their map exists but hasn't
+# been compiled yet -- instead of the misleading `No .vmap files found`
+# error.
+def resolve_content_addon_dir(cfg: Config, addon: str) -> Path | None:
+    game_addon_dir = resolve_addon_dir(cfg, addon)
+    if game_addon_dir is None:
+        return None
+    parts = list(game_addon_dir.parts)
+    try:
+        idx = len(parts) - 1 - parts[::-1].index("game")
+    except ValueError:
+        return None
+    parts[idx] = "content"
+    return Path(*parts)
+
+
 def resolve_cs2_executable(cfg: Config) -> Path | None:
     if not cfg.cs2_bin_path:
         return None
@@ -73,18 +92,47 @@ def resolve_cs2_executable(cfg: Config) -> Path | None:
     return None
 
 
-# returns the first .vmap stem found under `<addon>/maps/`. when the
-# user's addon has multiple .vmaps we still pick the first deterministic
+# returns the first map stem found under `<addon>/maps/`. when the
+# user's addon has multiple maps we still pick the first deterministic
 # one and surface the alternatives via a warn, so they know to use
-# `--map <name>` if it's wrong.
-def autodetect_mapname(addon_dir: Path) -> Tuple[str | None, List[str]]:
+# `--map <name>` if it's wrong. `content_addon_dir` is the parallel
+# editable-source dir under `content/` -- we union the two so a map
+# that's been imported but not yet compiled (no `.vmap_c` under `game/`)
+# still gets autodetected.
+def autodetect_mapname(
+    addon_dir: Path,
+    content_addon_dir: Path | None = None,
+) -> Tuple[str | None, List[str]]:
+    stems: set[str] = set()
     maps_dir = addon_dir / "maps"
-    if not maps_dir.is_dir():
-        return None, []
-    vmaps = sorted(p.stem for p in maps_dir.glob("*.vmap"))
+    if maps_dir.is_dir():
+        # .vmap_c is the compiled form cs2 loads at runtime; .vmap is the
+        # editable source that Hammer compiles from. Either is a valid
+        # signal that this map belongs to the addon.
+        for ext in ("*.vmap_c", "*.vmap"):
+            stems.update(p.stem for p in maps_dir.glob(ext))
+    if content_addon_dir is not None:
+        content_maps = content_addon_dir / "maps"
+        if content_maps.is_dir():
+            stems.update(p.stem for p in content_maps.glob("*.vmap"))
+    vmaps = sorted(stems)
     if not vmaps:
         return None, []
     return vmaps[0], vmaps
+
+
+# True iff the compiled `<addon>/maps/<map>.vmap_c` exists under `game/`.
+# cs2.exe `+map <name>` can only load a compiled .vmap_c -- the source
+# .vmap is editable-only and Hammer must compile it first.
+def compiled_vmap_exists(addon_dir: Path, mapname: str) -> bool:
+    return (addon_dir / "maps" / f"{mapname}.vmap_c").is_file()
+
+
+# True iff the editable `<content>/<addon>/maps/<map>.vmap` exists.
+def source_vmap_exists(content_addon_dir: Path | None, mapname: str) -> bool:
+    if content_addon_dir is None:
+        return False
+    return (content_addon_dir / "maps" / f"{mapname}.vmap").is_file()
 
 
 def build_cmdline(exe: Path, addon: str, mapname: str | None, hammer: bool) -> List[str]:
@@ -133,21 +181,46 @@ def run(args: argparse.Namespace) -> int:
         )
         return 2
 
+    content_addon_dir = resolve_content_addon_dir(cfg, addon)
+
     mapname = args.mapname
     if mapname is None and not args.hammer:
-        detected, alternatives = autodetect_mapname(addon_dir)
+        detected, alternatives = autodetect_mapname(addon_dir, content_addon_dir)
         if detected is None:
             error(
-                f"No .vmap files found under {addon_dir / 'maps'}/. "
+                f"No .vmap or .vmap_c files found under "
+                f"{addon_dir / 'maps'}/ or "
+                f"{(content_addon_dir / 'maps') if content_addon_dir else '<content>'}/. "
                 "Pass --map <name> explicitly or run `csgo2cs2 verify` to debug."
             )
             return 2
         mapname = detected
         if len(alternatives) > 1:
             warn(
-                f"Multiple .vmap files found ({', '.join(alternatives)}); "
+                f"Multiple maps found ({', '.join(alternatives)}); "
                 f"launching `{detected}`. Use --map to override."
             )
+
+    # Surface a clear, actionable error if the .vmap exists but hasn't
+    # been compiled yet. Without `.vmap_c`, `+map <name>` is a silent
+    # no-op in cs2 (the game starts on the main menu, looks confusing).
+    if (
+        mapname is not None
+        and not args.hammer
+        and not compiled_vmap_exists(addon_dir, mapname)
+        and source_vmap_exists(content_addon_dir, mapname)
+    ):
+        warn(
+            f"`{mapname}.vmap` exists but `{mapname}.vmap_c` (the compiled "
+            "form cs2 loads) has not been built. cs2 can't load the source "
+            ".vmap directly."
+        )
+        info(
+            f"To compile + load: `csgo2cs2 launch --hammer {addon}`, then "
+            "in Hammer open the map and use Map -> Build Map. cs2 will "
+            "launch with the compiled .vmap_c."
+        )
+        return 2
 
     cmd = build_cmdline(exe, addon, mapname, hammer=args.hammer)
     pretty = " ".join(_quote(a) for a in cmd)
@@ -175,3 +248,4 @@ def run(args: argparse.Namespace) -> int:
         return 1
     success(f"Launched cs2 (`{addon}`{' / ' + mapname if mapname else ''}).")
     return 0
+
