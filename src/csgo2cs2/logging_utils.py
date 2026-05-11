@@ -73,7 +73,7 @@ def debug(msg: str) -> None:
 # the old `== title ==` so longer step names like "Step 5/5: Analyze and
 # fix VMF" don't look cramped.
 def header(msg: str) -> None:
-    rule = "─" * max(8, min(60, len(msg) + 8))
+    rule = "-" * max(8, min(60, len(msg) + 8))
     print()
     print(_c(Style.BRIGHT, rule))
     print(_c(Style.BRIGHT, f"  {msg}"))
