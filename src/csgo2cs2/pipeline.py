@@ -834,6 +834,54 @@ def _ensure_addon_scaffold(cfg: Config, addon: str) -> None:
     success(f"Created {target} (addoninfo.gi + maps/).")
 
 
+def _content_addon_maps_dir(cfg: Config, addon: str) -> Path | None:
+    """Derive `<install>/content/csgo_addons/<addon>/maps` from the
+    configured `cs2_addons_path`. Returns None when the user hasn't
+    configured the path or when the derivation would be ambiguous."""
+    if not cfg.cs2_addons_path:
+        return None
+    game_dir = Path(cfg.cs2_addons_path).expanduser()
+    # cs2_addons_path is <install>/game/csgo_addons; swap `game` -> `content`
+    # to get the parallel content dir. We do this on the path parts so it's
+    # robust against trailing slashes and platform separators.
+    parts = list(game_dir.parts)
+    try:
+        idx = len(parts) - 1 - parts[::-1].index("game")
+    except ValueError:
+        return None
+    parts[idx] = "content"
+    return Path(*parts) / addon / "maps"
+
+
+def _ensure_prefab_refs_stub(cfg: Config, addon: str, mapname: str) -> None:
+    """Pre-create the post-import files Keller's wrapper reads
+    unconditionally. source1import only writes
+    `<map>_prefab_refs.txt` for maps that use prefabs -- for ones that
+    don't (e.g. recoil_master), the script crashes with FileNotFoundError
+    *after* a successful s1->s2 conversion. An empty stub is a well-formed
+    no-op for the post-processing chain.
+
+    Idempotent: never overwrites an existing non-empty file; source1import
+    will replace empty stubs with its real output when applicable."""
+    maps_dir = _content_addon_maps_dir(cfg, addon)
+    if maps_dir is None:
+        return
+    try:
+        maps_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # filesystem layout may not be writable yet (steam tools not
+        # installed); the importer would surface its own error in that
+        # case, so don't fail the pipeline here.
+        return
+    stub = maps_dir / f"{mapname}_prefab_refs.txt"
+    if stub.exists() and stub.stat().st_size > 0:
+        return
+    try:
+        stub.touch(exist_ok=True)
+    except OSError:
+        return
+
+
 def _stage_and_import(
     cfg: Config,
     vmf: Path,
@@ -906,6 +954,15 @@ def _stage_and_import(
         mapname=mapname,
     )
 
+    # Pre-create the file Keller's wrapper script reads unconditionally
+    # after import. source1import only writes `<map>_prefab_refs.txt`
+    # when the map uses prefabs; for maps without (e.g. recoil_master)
+    # the file never exists and StripMDLsFromRefs crashes with
+    # FileNotFoundError after a *successful* import. An empty file is a
+    # well-formed no-op: SplitMdlFromRefs yields zero models / zero refs
+    # and the rest of the post-processing chain handles empties cleanly.
+    _ensure_prefab_refs_stub(cfg, addon, mapname)
+
     info(f"Invoking import_map_community.py for `{addon}` / map `{mapname}`...")
     # Stream importer output so the user sees what resourcecompiler is
     # doing instead of staring at a blank line. The heartbeat fires every
@@ -950,13 +1007,48 @@ def _stage_and_import(
         result.stdout or "",
         result.stderr or "",
     )
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
     if result.returncode != 0:
+        # Keller's wrapper exits non-zero when its post-processing chain
+        # crashes (e.g. `StripMDLsFromRefs` reading a `<map>_prefab_refs.txt`
+        # that source1import never wrote), even after a successful s1->s2
+        # conversion. Recognise the success marker -- `OK: <N> imported,
+        # 0 failed` -- and treat the post-success crash as a warning so
+        # the actual port outcome isn't masked.
+        if _importer_logged_successful_import(combined):
+            warn(
+                f"Importer wrapper exited with code {result.returncode} "
+                "during post-processing, but the s1->s2 import itself "
+                f"succeeded (OK: <N> imported, 0 failed for `{mapname}`)."
+            )
+            warn(
+                "The .vmap is written; re-run `csgo2cs2 launch` (or open the "
+                "addon in CS2 Workshop Tools) to compile and load it."
+            )
+            success(
+                f"Import completed for `{mapname}` (post-process warnings ignored)."
+            )
+            return 0
         warn(f"Importer exited with code {result.returncode}")
         # stdout/stderr were already streamed in real time; no need to
         # re-print them.
-        _surface_known_error((result.stdout or "") + "\n" + (result.stderr or ""))
+        _surface_known_error(combined)
         return 1
 
     success("Import completed. Open the addon in CS2 Workshop Tools to compile.")
     return 0
+
+
+# Pattern emitted by source1import (Valve's own binary, not the python
+# wrapper) after every successful import: `OK: 1 imported, 0 failed, 0
+# skipped, 0 unknown, 0m:03s`. We anchor to `0 failed` so a partial-failure
+# import never satisfies the success check.
+_IMPORTER_OK_RE = re.compile(
+    r"\bOK:\s+\d+\s+imported,\s+0\s+failed,",
+    re.IGNORECASE,
+)
+
+
+def _importer_logged_successful_import(text: str) -> bool:
+    return bool(_IMPORTER_OK_RE.search(text or ""))
 
