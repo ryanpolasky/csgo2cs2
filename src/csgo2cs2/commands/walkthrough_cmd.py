@@ -36,6 +36,18 @@ def _confirm(question: str, default: bool, prompt_fn: PromptFn = input) -> bool:
     return raw in {"y", "yes"}
 
 
+def _noninteractive_prompt(_p: str) -> str:
+    """Prompt stand-in used when `--yes` is set. Returns empty so `_ask`
+    falls back to its default; `_ask` recognizes this and refuses to
+    loop on `required=True` prompts, raising instead."""
+    return ""
+
+
+class _NoninteractiveValueRequiredError(RuntimeError):
+    """Raised when a required-no-default prompt fires under `--yes`.
+    The walkthrough caller catches this and surfaces an actionable hint."""
+
+
 def _ask(
     question: str,
     *,
@@ -52,6 +64,10 @@ def _ask(
             return default
         if not required:
             return ""
+        # noninteractive mode: never loop. fail loudly so the caller
+        # passes the value on the command line instead.
+        if prompt_fn is _noninteractive_prompt:
+            raise _NoninteractiveValueRequiredError(question)
         warn("A value is required for this step.")
 
 
@@ -425,6 +441,13 @@ def run(
     prompt_fn: PromptFn = input,
     confirm_fn: Optional[ConfirmFn] = None,
 ) -> int:
+    # under `--yes`, the walkthrough is non-interactive: swap the prompt
+    # stand-in so we never block on stdin. tests rely on this too --
+    # pytest's stdin capture raises OSError on windows for any `input()`
+    # call, even if a default would be used.
+    if args.yes and prompt_fn is input:
+        prompt_fn = _noninteractive_prompt
+
     if confirm_fn is None:
         if args.yes:
             confirm_fn = lambda _q, _d: True  # noqa: E731
