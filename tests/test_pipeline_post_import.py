@@ -12,11 +12,14 @@ from csgo2cs2.pipeline import (
     _CONTENTDIR_MARKER,
     _collect_staged_refs,
     _collect_vmf_refs,
+    _content_addon_dir,
     _content_addon_maps_dir,
     _ensure_prefab_refs_stub,
+    _fix_vmdl_bodygroup_choices_text,
     _format_refs_kv,
     _importer_logged_successful_import,
     _mirror_into_csgo,
+    _patch_vmdl_bodygroup_choices,
     _unmirror_from_csgo,
     _unpatch_importer_contentdir,
     _write_prefab_refs_from_staged,
@@ -190,7 +193,15 @@ def test_collect_vmf_refs_extracts_materials_and_models(tmp_path):
         'side\n{\n  "material" "metal/hr_metal/hr_metal_wall_a.vmt"\n}\n'
         'entity\n{\n  "model" "models/weapons/w_pist_glock18.mdl"\n}\n'
         'entity\n{\n  "model" "models/props/foo"\n}\n'
-        'entity\n{\n  "model" "props/no_models_prefix.mdl"\n}\n',
+        # env_sprite uses `"model"` for a sprite path. The value is a
+        # .vmt or .spr -- both must be skipped, not turned into
+        # `models/.../glow.vmt.mdl`.
+        'entity\n{\n  "model" "materials/sprites/glow04.vmt"\n}\n'
+        'entity\n{\n  "model" "sprites/glow01.spr"\n}\n'
+        # Embedded brush-volume ref ("*0", "*1", ...) -- not a file ref.
+        'entity\n{\n  "model" "*0"\n}\n'
+        # No "models/" prefix and no .mdl extension -- ambiguous, skip.
+        'entity\n{\n  "model" "props/no_models_prefix"\n}\n',
         encoding="utf-8",
     )
     refs = _collect_vmf_refs(vmf)
@@ -199,13 +210,41 @@ def test_collect_vmf_refs_extracts_materials_and_models(tmp_path):
         "materials/metal/metalcombine002.vmt",
         "materials/wood/wood_int_10.vmt",
         "models/props/foo.mdl",
-        "models/props/no_models_prefix.mdl",
         "models/weapons/w_pist_glock18.mdl",
     ]
 
 
 def test_collect_vmf_refs_missing_file_returns_empty(tmp_path):
     assert _collect_vmf_refs(tmp_path / "nope.vmf") == []
+
+
+def test_collect_vmf_refs_emits_skybox_faces(tmp_path):
+    # worldspawn `"skyname"` resolves to 6 face vmts under
+    # `materials/skybox/`. We emit both naming conventions to cover
+    # historical (hl2 `<sky><face>`) and modern (csgo `<sky>_<face>`)
+    # layouts -- source1import just skips refs it can't find.
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text(
+        'world\n{\n  "skyname" "sky_dust"\n}\n',
+        encoding="utf-8",
+    )
+    refs = _collect_vmf_refs(vmf)
+    expected = []
+    for face in ("up", "dn", "lf", "rt", "ft", "bk"):
+        expected.append(f"materials/skybox/sky_dust{face}.vmt")
+        expected.append(f"materials/skybox/sky_dust_{face}.vmt")
+    assert refs == sorted(expected)
+
+
+def test_collect_vmf_refs_skyname_strips_path_and_extension(tmp_path):
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text(
+        'world\n{\n  "skyname" "skybox/sky_dust.vmt"\n}\n',
+        encoding="utf-8",
+    )
+    refs = _collect_vmf_refs(vmf)
+    assert "materials/skybox/sky_dust_up.vmt" in refs
+    assert "materials/skybox/sky_dustup.vmt" in refs
 
 
 def test_write_prefab_refs_from_staged_merges_vmf_refs(tmp_path):
@@ -404,3 +443,148 @@ def test_unmirror_from_csgo_removes_only_mirrored_files(tmp_path):
 
 def test_unmirror_from_csgo_noop_when_no_manifest(tmp_path):
     assert _unmirror_from_csgo(tmp_path) == 0
+
+
+# `cs_mdl_import` (Valve's .mdl->.vmdl step) emits a .vmdl where every
+# `BodyGroupChoice` block is missing the `name = "..."` KV. S2's
+# resourcecompiler then errors out with "Invalid empty body group
+# choice name" and fails every CSGO weapon model. The fixer injects
+# the missing field using the parent BodyGroup's name + a 0-based
+# choice index, e.g. `name = "magazine_choice_1"`.
+_BODYGROUP_WEAPON_VMDL = (
+    "<!-- kv3 modeldoc -->\r\n"
+    "{\r\n"
+    "\trootNode =\r\n"
+    "\t{\r\n"
+    '\t\t_class = "RootNode"\r\n'
+    "\t\tchildren =\r\n"
+    "\t\t[\r\n"
+    "\t\t\t{\r\n"
+    '\t\t\t\t_class = "BodyGroupList"\r\n'
+    "\t\t\t\tchildren =\r\n"
+    "\t\t\t\t[\r\n"
+    "\t\t\t\t\t{\r\n"
+    '\t\t\t\t\t\t_class = "BodyGroup"\r\n'
+    '\t\t\t\t\t\tname = "studio"\r\n'
+    "\t\t\t\t\t\tchildren =\r\n"
+    "\t\t\t\t\t\t[\r\n"
+    "\t\t\t\t\t\t\t{\r\n"
+    '\t\t\t\t\t\t\t\t_class = "BodyGroupChoice"\r\n'
+    "\t\t\t\t\t\t\t\tmeshes = [  ]\r\n"
+    "\t\t\t\t\t\t\t},\r\n"
+    "\t\t\t\t\t\t]\r\n"
+    "\t\t\t\t\t},\r\n"
+    "\t\t\t\t\t{\r\n"
+    '\t\t\t\t\t\t_class = "BodyGroup"\r\n'
+    '\t\t\t\t\t\tname = "magazine"\r\n'
+    "\t\t\t\t\t\tchildren =\r\n"
+    "\t\t\t\t\t\t[\r\n"
+    "\t\t\t\t\t\t\t{\r\n"
+    '\t\t\t\t\t\t\t\t_class = "BodyGroupChoice"\r\n'
+    '\t\t\t\t\t\t\t\tmeshes = [ "w_pist_glock18_bg_magazine_sm0_lod0" ]\r\n'
+    "\t\t\t\t\t\t\t},\r\n"
+    "\t\t\t\t\t\t\t{\r\n"
+    '\t\t\t\t\t\t\t\t_class = "BodyGroupChoice"\r\n'
+    "\t\t\t\t\t\t\t\tmeshes = [  ]\r\n"
+    "\t\t\t\t\t\t\t},\r\n"
+    "\t\t\t\t\t\t]\r\n"
+    "\t\t\t\t\t},\r\n"
+    "\t\t\t\t]\r\n"
+    "\t\t\t},\r\n"
+    "\t\t]\r\n"
+    "\t}\r\n"
+    "}\r\n"
+)
+
+
+def test_fix_vmdl_bodygroup_choices_injects_name_per_parent():
+    new_text, n = _fix_vmdl_bodygroup_choices_text(_BODYGROUP_WEAPON_VMDL)
+    assert n == 3
+    # Names are unique within each parent BodyGroup and start at 0.
+    assert 'name = "studio_choice_0"' in new_text
+    assert 'name = "magazine_choice_0"' in new_text
+    assert 'name = "magazine_choice_1"' in new_text
+    # Each `name = ...` line is matched with its parent BodyGroupChoice
+    # block and follows the `_class = ...` line directly.
+    assert ('_class = "BodyGroupChoice"\r\n' '\t\t\t\t\t\t\t\tname = "studio_choice_0"') in new_text
+
+
+def test_fix_vmdl_bodygroup_choices_preserves_crlf_line_endings():
+    # cs_mdl_import emits CRLF on Windows. Universal-newline text mode
+    # would silently rewrite to LF and trip diff/sign tools.
+    new_text, n = _fix_vmdl_bodygroup_choices_text(_BODYGROUP_WEAPON_VMDL)
+    assert n == 3
+    assert "\r\n" in new_text
+    # No lone LFs introduced.
+    raw = new_text.encode("utf-8")
+    assert raw.count(b"\n") == raw.count(b"\r\n")
+
+
+def test_fix_vmdl_bodygroup_choices_idempotent():
+    once, n1 = _fix_vmdl_bodygroup_choices_text(_BODYGROUP_WEAPON_VMDL)
+    twice, n2 = _fix_vmdl_bodygroup_choices_text(once)
+    assert n1 == 3
+    assert n2 == 0
+    assert once == twice
+
+
+def test_fix_vmdl_bodygroup_choices_leaves_named_choices_alone():
+    # A .vmdl that already has names on its BodyGroupChoice children
+    # should not be touched. The per-parent counter still advances so
+    # sibling un-named choices receive distinct injected indices.
+    vmdl = (
+        "{\n"
+        '\t_class = "BodyGroup"\n'
+        '\tname = "magazine"\n'
+        "\tchildren =\n"
+        "\t[\n"
+        "\t\t{\n"
+        '\t\t\t_class = "BodyGroupChoice"\n'
+        '\t\t\tname = "full"\n'
+        "\t\t\tmeshes = []\n"
+        "\t\t},\n"
+        "\t\t{\n"
+        '\t\t\t_class = "BodyGroupChoice"\n'
+        "\t\t\tmeshes = [  ]\n"
+        "\t\t},\n"
+        "\t]\n"
+        "}\n"
+    )
+    new_text, n = _fix_vmdl_bodygroup_choices_text(vmdl)
+    assert n == 1
+    # First child already had a name; the second gets the next index.
+    assert 'name = "magazine_choice_1"' in new_text
+    assert 'name = "full"' in new_text
+
+
+def test_patch_vmdl_bodygroup_choices_walks_addon_models(tmp_path):
+    cfg = _cfg_with_addons(tmp_path)
+    addon_dir = _content_addon_dir(cfg, "test_addon")
+    assert addon_dir is not None
+    models = addon_dir / "models" / "weapons"
+    models.mkdir(parents=True)
+    weapon = models / "w_pist_glock18.vmdl"
+    weapon.write_bytes(_BODYGROUP_WEAPON_VMDL.encode("utf-8"))
+    # an unrelated text file we shouldn't touch.
+    (models / "notes.txt").write_text("not a vmdl")
+
+    n_files, n_choices = _patch_vmdl_bodygroup_choices(cfg, "test_addon")
+    assert (n_files, n_choices) == (1, 3)
+    # Re-running is a no-op.
+    assert _patch_vmdl_bodygroup_choices(cfg, "test_addon") == (0, 0)
+    # The .txt sibling is untouched.
+    assert (models / "notes.txt").read_text() == "not a vmdl"
+
+
+def test_patch_vmdl_bodygroup_choices_handles_unconfigured(tmp_path):
+    # No cs2_addons_path configured -> nothing to patch.
+    cfg = Config()
+    assert _patch_vmdl_bodygroup_choices(cfg, "any") == (0, 0)
+
+
+def test_patch_vmdl_bodygroup_choices_handles_missing_models_dir(tmp_path):
+    cfg = _cfg_with_addons(tmp_path)
+    addon_dir = _content_addon_dir(cfg, "test_addon")
+    assert addon_dir is not None
+    addon_dir.mkdir(parents=True)  # no models/ subdir
+    assert _patch_vmdl_bodygroup_choices(cfg, "test_addon") == (0, 0)

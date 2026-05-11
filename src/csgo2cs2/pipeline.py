@@ -870,6 +870,133 @@ def _content_addon_maps_dir(cfg: Config, addon: str) -> Path | None:
     return Path(*parts) / addon / "maps"
 
 
+def _content_addon_dir(cfg: Config, addon: str) -> Path | None:
+    """`<install>/content/csgo_addons/<addon>` (the parent of /maps,
+    /models, /materials, etc.). Returns None when unconfigured."""
+    maps_dir = _content_addon_maps_dir(cfg, addon)
+    return maps_dir.parent if maps_dir is not None else None
+
+
+# `_class = "..."` and a single-line `name = "..."` (both standard
+# ModelDoc / KV3 forms). Used by the BodyGroupChoice fixer below.
+_VMDL_CLASS_RE = re.compile(r'_class\s*=\s*"([^"]+)"')
+_VMDL_NAME_RE = re.compile(r'^\s*name\s*=\s*"([^"]*)"\s*$')
+
+
+def _vmdl_block_end(lines: list[str], start: int) -> int:
+    """Index of the `}` that closes the `{` enclosing `lines[start]`.
+    We assume `start` is INSIDE a `{ ... }` block (depth 1) and walk
+    forward counting `{`/`}` until we return to depth 0."""
+    depth = 1
+    for j in range(start, len(lines)):
+        for ch in lines[j]:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return j
+    return len(lines) - 1
+
+
+def _vmdl_block_has_name(lines: list[str], start: int, end: int) -> bool:
+    """True iff any `name = "..."` KV appears in `lines[start..end]`."""
+    return any(_VMDL_NAME_RE.match(lines[j]) for j in range(start, end + 1))
+
+
+def _fix_vmdl_bodygroup_choices_text(text: str) -> tuple[str, int]:
+    """Inject `name = "<bg>_choice_<N>"` on every BodyGroupChoice block
+    that lacks a `name` field. cs_mdl_import (Valve's .mdl->.vmdl step)
+    omits the field on every choice, which makes resourcecompiler fail
+    every CSGO weapon with:
+
+        RESOURCE COMPILE ERROR: BodyGroup: studio : Invalid empty body
+        group choice name in bodygroup 'studio'. Non-empty choice names
+        are required.
+
+    Preserves the file's original line endings (cs_mdl_import emits
+    CRLF on Windows). Returns (new_text, n_fixes). Idempotent: a second
+    pass over an already-patched file applies zero fixes."""
+    if "\r\n" in text:
+        eol = "\r\n"
+        body = text.replace("\r\n", "\n")
+    else:
+        eol = "\n"
+        body = text
+    lines = body.split("\n")
+
+    # Stack of (parent_bodygroup_name, next_choice_index, parent_end_idx).
+    # We pop entries off the stack as we walk past their closing `}`.
+    bg_stack: list[tuple[str, int, int]] = []
+    edits: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        m = _VMDL_CLASS_RE.search(line)
+        if not m:
+            continue
+        cls = m.group(1)
+        if cls == "BodyGroup":
+            block_end = _vmdl_block_end(lines, i)
+            bg_name = ""
+            for j in range(i, block_end + 1):
+                nm = _VMDL_NAME_RE.match(lines[j])
+                if nm:
+                    bg_name = nm.group(1)
+                    break
+            bg_stack.append((bg_name or "bodygroup", 0, block_end))
+        elif cls == "BodyGroupChoice":
+            while bg_stack and bg_stack[-1][2] < i:
+                bg_stack.pop()
+            block_end = _vmdl_block_end(lines, i)
+            has_name = _vmdl_block_has_name(lines, i + 1, block_end)
+            parent_name, idx, parent_end = bg_stack[-1] if bg_stack else ("orphan", 0, 0)
+            if not has_name:
+                # Match the indentation of `_class = ...` so the
+                # injected KV lines up with the rest of the block.
+                indent_len = len(line) - len(line.lstrip(" \t"))
+                indent = line[:indent_len]
+                edits.append(
+                    (i, f'{indent}name = "{parent_name}_choice_{idx}"'),
+                )
+            if bg_stack:
+                bg_stack[-1] = (parent_name, idx + 1, parent_end)
+
+    if not edits:
+        return text, 0
+    for insert_after, new_line in sorted(edits, reverse=True):
+        lines.insert(insert_after + 1, new_line)
+    return eol.join(lines), len(edits)
+
+
+def _patch_vmdl_bodygroup_choices(cfg: Config, addon: str) -> tuple[int, int]:
+    """Walk every `.vmdl` under `<content>/csgo_addons/<addon>/models/`
+    and inject missing BodyGroupChoice names. Returns (n_files_patched,
+    n_choices_patched). Safe to call multiple times; skips files that
+    don't need fixing."""
+    addon_dir = _content_addon_dir(cfg, addon)
+    if addon_dir is None:
+        return (0, 0)
+    models_dir = addon_dir / "models"
+    if not models_dir.is_dir():
+        return (0, 0)
+    files_patched = 0
+    choices_patched = 0
+    for vmdl in models_dir.rglob("*.vmdl"):
+        try:
+            raw = vmdl.read_bytes()
+        except OSError:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        new_text, n = _fix_vmdl_bodygroup_choices_text(text)
+        if n > 0:
+            try:
+                vmdl.write_bytes(new_text.encode("utf-8"))
+            except OSError:
+                continue
+            files_patched += 1
+            choices_patched += n
+    return (files_patched, choices_patched)
+
+
 # Subdirectories under staged/ that hold asset sources convertible by
 # source1import. .vmt -> .vmat (materials), .mdl -> .vmdl (models). Other
 # pakfile dirs (sound, particles, ...) ship loose at runtime and don't
@@ -904,6 +1031,12 @@ def _collect_staged_refs(staged_root: Path) -> list[str]:
 # with a .mdl extension (e.g. `models/weapons/w_pist_glock18.mdl`).
 _VMF_MATERIAL_RE = re.compile(r'"material"\s*"([^"\n]+)"', re.IGNORECASE)
 _VMF_MODEL_RE = re.compile(r'"model"\s*"([^"\n]+)"', re.IGNORECASE)
+_VMF_SKYNAME_RE = re.compile(r'"skyname"\s*"([^"\n]+)"', re.IGNORECASE)
+
+# Source 1 skyboxes are 6 .vmts named `<skyname>_<face>.vmt` under
+# `materials/skybox/`. Map's worldspawn carries `"skyname" "<name>"`;
+# the engine resolves all six faces at runtime.
+_SKYBOX_FACES = ("up", "dn", "lf", "rt", "ft", "bk")
 
 
 def _collect_vmf_refs(vmf_path: Path) -> list[str]:
@@ -937,11 +1070,50 @@ def _collect_vmf_refs(vmf_path: Path) -> list[str]:
         val = m.group(1).strip().replace("\\", "/").lower()
         if not val:
             continue
+        # env_sprite / env_glow / point_spotlight entities reuse the
+        # `"model"` key for sprite refs whose value is a .vmt material or
+        # .spr Source-1 sprite path. Neither is a model and neither
+        # converts via the .mdl pipeline -- blindly appending .mdl yields
+        # bogus paths like `models/sprites/glow04.vmt.mdl` that the
+        # importer chokes on.
+        if val.endswith((".vmt", ".spr")):
+            continue
+        # entity-brush refs ("*0", "*1", ...) point at an embedded brush
+        # volume rather than a model file.
+        if val.startswith("*"):
+            continue
+        # only accept refs that are clearly under models/. Don't try to
+        # auto-prefix arbitrary values -- they're almost always something
+        # weird (skybox names, env_sprite sprites we missed, etc.) that
+        # produces a junk path source1import can't find.
         if not val.endswith(".mdl"):
+            if not val.startswith("models/"):
+                continue
             val = f"{val}.mdl"
         if not val.startswith("models/"):
-            val = f"models/{val}"
+            continue
         refs.add(val)
+    for m in _VMF_SKYNAME_RE.finditer(text):
+        sky = m.group(1).strip().replace("\\", "/").lower()
+        if not sky:
+            continue
+        # worldspawn may carry `"skyname" "skybox/dust"` or just `"dust"`;
+        # normalise to bare basename so we can build the per-face refs.
+        sky = sky.rsplit("/", 1)[-1]
+        if sky.endswith(".vmt"):
+            sky = sky[:-4]
+        if not sky:
+            continue
+        # Skybox face files in source-1 are named `<skyname><face>.vmt`
+        # in older Valve content (hl2: `sky_day01_01up.vmt`) and
+        # `<skyname>_<face>.vmt` in newer CSGO content (`sky_dust_up.vmt`).
+        # Emitting both is safe -- source1import skips refs it can't
+        # resolve, and the ones that DO match the actual files in
+        # pak01_*.vpk get converted to the single composite .vmat CS2
+        # expects.
+        for face in _SKYBOX_FACES:
+            refs.add(f"materials/skybox/{sky}{face}.vmt")
+            refs.add(f"materials/skybox/{sky}_{face}.vmt")
     return sorted(refs)
 
 
@@ -1360,6 +1532,19 @@ def _stage_and_import(
         result.stderr or "",
     )
     combined = (result.stdout or "") + "\n" + (result.stderr or "")
+
+    # cs_mdl_import emits .vmdl files where every BodyGroupChoice block
+    # is missing its `name = "..."` field, which makes resourcecompiler
+    # fail every CSGO weapon model. Patch all .vmdls under the addon
+    # before resourcecompiler / Hammer Build sees them.
+    n_vmdl_files, n_vmdl_choices = _patch_vmdl_bodygroup_choices(cfg, addon)
+    if n_vmdl_files:
+        info(
+            f"Patched {n_vmdl_choices} BodyGroupChoice block(s) across "
+            f"{n_vmdl_files} .vmdl file(s) (cs_mdl_import omits the "
+            "`name` field, resourcecompiler rejects empty names)."
+        )
+
     if result.returncode != 0:
         # Keller's wrapper exits non-zero when its post-processing chain
         # crashes (e.g. `StripMDLsFromRefs` reading a `<map>_prefab_refs.txt`
