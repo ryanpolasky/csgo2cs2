@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -18,9 +19,51 @@ from .platform_check import require_windows
 from .tools.bspsource import BSPSource
 from .tools.import_map import ImportInputs, ImportMapTool
 from .tools.steamcmd import CSGO_APP_ID, SteamCMD
-from .utils.manifest import PortManifest, WorkshopMeta
+from .utils.known_errors import match_error
+from .utils.manifest import (
+    PORT_STAGES,
+    STAGE_DONE,
+    STAGE_FAILED,
+    STAGE_SKIPPED,
+    PortManifest,
+    WorkshopMeta,
+)
 from .utils.paths import ensure_dir, find_first
+from .utils.preflight import format_report, is_skip_requested, run_preflight
+from .utils.retry import RetryPolicy, retry_until
+from .utils.run_log import current as current_log
+from .utils.run_log import log_event
 from .utils.url import parse_workshop_id
+
+
+# Print a "[stage N/M] name • elapsed" header for the current stage and
+# return the start time the caller passes to `_log_stage_end`.
+def _log_stage_start(stage: str, n: int, total: int = 6) -> float:
+    header(f"Step {n}/{total}: {stage}")
+    log_event(f"stage_start: {stage}")
+    return time.monotonic()
+
+
+def _log_stage_end(stage: str, start: float, status: str = "done") -> None:
+    elapsed = time.monotonic() - start
+    log_event(f"stage_end: {stage} ({status}, {elapsed:.1f}s)")
+    info(f"[stage:{stage}] {status} in {elapsed:.1f}s")
+
+
+# match known error patterns against subprocess output and surface a hint.
+def _surface_known_error(text: str) -> None:
+    if not text:
+        return
+    hit = match_error(text)
+    if hit is None:
+        return
+    warn(f"hint ({hit.id}): {hit.hint}")
+
+
+def _record_subprocess(tool: str, argv: list, returncode: int, stdout: str, stderr: str) -> None:
+    log = current_log()
+    if log is not None:
+        log.record_subprocess(tool, argv, returncode, stdout, stderr)
 
 
 def run_port_pipeline(
@@ -36,6 +79,10 @@ def run_port_pipeline(
     dry_run: bool = False,
     export_images: Optional[str] = None,
     auto_addoninfo: bool = False,
+    resume: bool = True,
+    restart: bool = False,
+    overwrite: bool = False,
+    skip_preflight: bool = False,
 ) -> int:
     cfg = load_config(config_path)
 
@@ -56,24 +103,101 @@ def run_port_pipeline(
         workshop_id = parsed
 
     workspace = ensure_dir(Path(cfg.workspace_dir).expanduser() / workshop_id)
-    manifest = PortManifest(workshop_id=workshop_id, addon_name=addon)
     manifest_path = workspace / "manifest.json"
+    if not restart and manifest_path.exists():
+        try:
+            manifest = PortManifest.load(manifest_path)
+            # if the addon name changed, treat as a fresh run
+            if manifest.addon_name != addon:
+                info(
+                    f"Manifest addon mismatch ({manifest.addon_name!r} vs {addon!r}); "
+                    "starting fresh."
+                )
+                manifest = PortManifest(workshop_id=workshop_id, addon_name=addon)
+        except (OSError, ValueError):
+            manifest = PortManifest(workshop_id=workshop_id, addon_name=addon)
+    else:
+        if restart and manifest_path.exists():
+            info("--restart: clearing prior stage state.")
+        manifest = PortManifest(workshop_id=workshop_id, addon_name=addon)
 
     info(f"Workshop ID: {workshop_id}")
     info(f"Workspace:   {workspace}")
     info(f"Addon:       {addon}")
 
-    # step 1: download with steamcmd (or use the provided local file)
-    if local_bsp:
-        header("Step 1/5: Local BSP")
-        bsp = local_bsp
-        info(f"Using local BSP: {bsp}")
+    # record last_args so resume runs preserve fix choices
+    manifest.last_args = {
+        "auto": auto,
+        "skip_import": skip_import,
+        "use_bsp": use_bsp,
+        "no_merge_instances": no_merge_instances,
+        "skip_deps": skip_deps,
+        "dry_run": dry_run,
+        "export_images": export_images,
+        "auto_addoninfo": auto_addoninfo,
+    }
+    manifest.save(manifest_path)
+
+    # ----- preflight ----------------------------------------------------
+    if not skip_preflight and not is_skip_requested():
+        report = run_preflight(
+            cfg,
+            addon=addon,
+            skip_import=skip_import or bool(local_bsp),
+            overwrite=overwrite,
+        )
+        if report.warnings:
+            info("Preflight warnings:")
+            for w in report.warnings:
+                warn(f"  {w.id}: {w.message}")
+                if w.hint:
+                    info(f"    hint: {w.hint}")
+        if report.errors:
+            error("Preflight blocked the port. Fix these and re-run:")
+            print(format_report(report))
+            info("Set CSGO2CS2_SKIP_PREFLIGHT=1 to override (not recommended).")
+            return 2
+        elif not report.warnings:
+            success("Preflight passed.")
     else:
-        header("Step 1/5: Download")
+        info("Preflight skipped (--skip-preflight or CSGO2CS2_SKIP_PREFLIGHT).")
+
+    # ----- stage 1: download (or use local bsp) -------------------------
+    stage = "download"
+    if local_bsp:
+        start = _log_stage_start("Local BSP", 1)
+        bsp = local_bsp
+        manifest.start_stage(stage)
+        info(f"Using local BSP: {bsp}")
+        manifest.finish_stage(stage, STAGE_SKIPPED, "local --bsp; download skipped")
+        manifest.save(manifest_path)
+        _log_stage_end(stage, start, "skipped")
+    elif resume and manifest.stage_is_done(stage):
+        info(f"Stage {stage!r} already done; skipping.")
+        bsp = _resolve_existing_bsp(cfg, workshop_id)
+        if bsp is None:
+            warn("Manifest says download is done but no BSP found; re-downloading.")
+            start = _log_stage_start("Download", 1)
+            manifest.start_stage(stage)
+            bsp = _download(cfg, workshop_id)
+            if not bsp:
+                manifest.finish_stage(stage, STAGE_FAILED, "no .bsp after retry")
+                manifest.save(manifest_path)
+                return 1
+            manifest.finish_stage(stage, STAGE_DONE, str(bsp))
+            manifest.save(manifest_path)
+            _log_stage_end(stage, start)
+    else:
+        start = _log_stage_start("Download", 1)
+        manifest.start_stage(stage)
         bsp = _download(cfg, workshop_id)
         if not bsp:
+            manifest.finish_stage(stage, STAGE_FAILED, "no .bsp after retry")
             manifest.save(manifest_path)
             return 1
+        manifest.finish_stage(stage, STAGE_DONE, str(bsp))
+        manifest.save(manifest_path)
+        _log_stage_end(stage, start)
 
     # optional: fetch workshop metadata. shared between --export-images
     # (writes to a side dir) and --auto-addoninfo (writes into the addon
@@ -82,8 +206,6 @@ def run_port_pipeline(
     if (export_images or auto_addoninfo) and not local_bsp:
         workshop_meta = _fetch_workshop_meta(workshop_id)
     if workshop_meta is not None:
-        # snapshot the metadata into the manifest so `status` can show
-        # title/description later without a network roundtrip.
         import time as _time
 
         manifest.record_workshop_meta(
@@ -101,50 +223,98 @@ def run_port_pipeline(
     if export_images and workshop_meta is not None:
         _write_workshop_images(workshop_meta, export_images)
 
-    # step 2: inspect the bsp before decompile
-    header("Step 2/5: Inspect BSP")
-    bsp_info = inspect_bsp(bsp)
-    if not bsp_info.valid_header:
-        error(f"{bsp.name} does not look like a Source 1 BSP (header missing).")
+    # ----- stage 2: inspect ---------------------------------------------
+    stage = "inspect"
+    if resume and manifest.stage_is_done(stage):
+        info(f"Stage {stage!r} already done; skipping.")
+    else:
+        start = _log_stage_start("Inspect BSP", 2)
+        manifest.start_stage(stage)
+        bsp_info = inspect_bsp(bsp)
+        if not bsp_info.valid_header:
+            error(f"{bsp.name} does not look like a Source 1 BSP (header missing).")
+            manifest.finish_stage(stage, STAGE_FAILED, "missing BSP header")
+            manifest.save(manifest_path)
+            return 1
+        info(f"BSP version: {bsp_info.version}")
+        if bsp_info.suspected_protected:
+            error(
+                f"BSP appears to be protected (marker `{bsp_info.detected_marker}`). "
+                "Decompilers will fail or produce garbage. Aborting."
+            )
+            manifest.finish_stage(stage, STAGE_FAILED, "bsp protected")
+            manifest.save(manifest_path)
+            return 1
+        manifest.finish_stage(stage, STAGE_DONE, f"version {bsp_info.version}")
         manifest.save(manifest_path)
-        return 1
-    info(f"BSP version: {bsp_info.version}")
-    if bsp_info.suspected_protected:
-        error(
-            f"BSP appears to be protected (marker `{bsp_info.detected_marker}`). "
-            "Decompilers will fail or produce garbage. Aborting."
-        )
-        manifest.save(manifest_path)
-        return 1
+        _log_stage_end(stage, start)
 
-    # step 3: extract packed assets if a tool is configured
-    header("Step 3/5: Extract packed assets")
+    # ----- stage 3: extract ---------------------------------------------
+    stage = "extract"
     extract_dir = workspace / "extracted"
-    extract_result = extract_bsp_assets(cfg, bsp, extract_dir)
-    if not extract_result.succeeded:
-        warn(extract_result.detail or "asset extraction skipped")
-
-    # step 4: decompile with bspsource
-    header("Step 4/5: Decompile")
-    vmf = _decompile(cfg, bsp, workspace / "decompiled")
-    if not vmf:
+    if resume and manifest.stage_is_done(stage):
+        info(f"Stage {stage!r} already done; skipping.")
+    else:
+        start = _log_stage_start("Extract packed assets", 3)
+        manifest.start_stage(stage)
+        extract_result = extract_bsp_assets(cfg, bsp, extract_dir)
+        if not extract_result.succeeded:
+            warn(extract_result.detail or "asset extraction skipped")
+            manifest.finish_stage(stage, STAGE_SKIPPED, extract_result.detail or "extract skipped")
+        else:
+            manifest.finish_stage(stage, STAGE_DONE, extract_result.detail or "")
         manifest.save(manifest_path)
-        return 1
+        _log_stage_end(stage, start)
 
-    # step 5a: analyze and optionally auto-fix the vmf
-    header("Step 5/5: Analyze and fix VMF")
+    # ----- stage 4: decompile -------------------------------------------
+    stage = "decompile"
+    decompiled_dir = workspace / "decompiled"
+    if resume and manifest.stage_is_done(stage):
+        info(f"Stage {stage!r} already done; skipping.")
+        vmf = find_first(decompiled_dir, ["*.vmf"])
+        if vmf is None:
+            warn("Manifest says decompile is done but no .vmf found; re-running.")
+            start = _log_stage_start("Decompile", 4)
+            manifest.start_stage(stage)
+            vmf = _decompile(cfg, bsp, decompiled_dir)
+            if not vmf:
+                manifest.finish_stage(stage, STAGE_FAILED, "no .vmf produced")
+                manifest.save(manifest_path)
+                return 1
+            manifest.finish_stage(stage, STAGE_DONE, str(vmf))
+            manifest.save(manifest_path)
+            _log_stage_end(stage, start)
+    else:
+        start = _log_stage_start("Decompile", 4)
+        manifest.start_stage(stage)
+        vmf = _decompile(cfg, bsp, decompiled_dir)
+        if not vmf:
+            manifest.finish_stage(stage, STAGE_FAILED, "no .vmf produced")
+            manifest.save(manifest_path)
+            return 1
+        manifest.finish_stage(stage, STAGE_DONE, str(vmf))
+        manifest.save(manifest_path)
+        _log_stage_end(stage, start)
+
+    # ----- stage 5: analyze and fix vmf ---------------------------------
+    stage = "analyze"
+    start = _log_stage_start("Analyze and fix VMF", 5)
+    manifest.start_stage(stage)
     vmf = _analyze_and_fix(vmf, cfg, manifest, auto=auto, dry_run=dry_run)
+    manifest.finish_stage(stage, STAGE_DONE)
+    manifest.save(manifest_path)
+    _log_stage_end(stage, start)
 
-    # step 5b: import with the windows-only cs2 toolchain
+    # ----- stage 6: import ----------------------------------------------
+    stage = "import"
     if skip_import:
         warn("Skipping import as requested. VMF is ready for Windows-side import.")
+        manifest.finish_stage(stage, STAGE_SKIPPED, "--skip-import")
         manifest.save(manifest_path)
         info(f"Manifest saved: {manifest_path}")
         return 0
 
     if dry_run:
-        # show the importer command line without running it. compose the same
-        # inputs `_stage_and_import` would, so the cmd is faithful.
         rc = _print_dry_run_plan(
             cfg=cfg,
             vmf=vmf,
@@ -155,12 +325,14 @@ def run_port_pipeline(
             no_merge_instances=no_merge_instances,
             skip_deps=skip_deps,
         )
+        manifest.finish_stage(stage, STAGE_SKIPPED, "--dry-run")
         manifest.save(manifest_path)
         info(f"Manifest saved: {manifest_path}")
         return rc
 
     require_windows("CS2 map import")
-
+    start = _log_stage_start("Import", 6)
+    manifest.start_stage(stage)
     rc = _stage_and_import(
         cfg=cfg,
         vmf=vmf,
@@ -173,16 +345,44 @@ def run_port_pipeline(
         skip_deps=skip_deps,
     )
 
-    # post-import: optionally populate addoninfo.json + thumbnail from
-    # the workshop metadata we already fetched. soft-fails so that a
-    # successful import is never reported as failed because of a metadata
-    # write hiccup.
+    if rc == 0:
+        manifest.finish_stage(stage, STAGE_DONE)
+    else:
+        manifest.finish_stage(stage, STAGE_FAILED, f"importer rc={rc}")
+    _log_stage_end(stage, start, "done" if rc == 0 else "failed")
+
     if rc == 0 and auto_addoninfo and workshop_meta is not None:
         _populate_addoninfo(cfg, addon, workshop_meta, export_images)
 
     manifest.save(manifest_path)
     info(f"Manifest saved: {manifest_path}")
+
+    # final summary footer
+    _print_stage_summary(manifest)
     return rc
+
+
+def _print_stage_summary(manifest: PortManifest) -> None:
+    rows = []
+    for name in PORT_STAGES:
+        rec = manifest.stages.get(name)
+        if rec is None:
+            rows.append((name, "pending", "-"))
+            continue
+        elapsed = rec.elapsed
+        elapsed_s = f"{elapsed:.1f}s" if elapsed is not None else "-"
+        rows.append((name, rec.status, elapsed_s))
+    info("Stage summary:")
+    for name, status, dur in rows:
+        print(f"  {name:<10}  {status:<8}  {dur:>7}")
+
+
+def _resolve_existing_bsp(cfg: Config, workshop_id: str) -> Optional[Path]:
+    cmd = SteamCMD(cfg.steamcmd_path)
+    expected = cmd.expected_workshop_path(workshop_id)
+    if not expected or not expected.exists():
+        return None
+    return find_first(expected, ["*.bsp"])
 
 
 # soft-fails: a flaky Steam web call must NOT kill the actual port.
@@ -234,8 +434,6 @@ def _populate_addoninfo(cfg: Config, addon: str, meta, export_images_dir: Option
     else:
         success(f"auto-addoninfo: wrote {written.name}")
 
-    # locate the preview if --export-images already cached it; saves a
-    # second http roundtrip.
     preview_path = None
     if export_images_dir:
         side_dir = Path(export_images_dir).expanduser() / str(meta.workshop_id)
@@ -245,8 +443,6 @@ def _populate_addoninfo(cfg: Config, addon: str, meta, export_images_dir: Option
                 break
 
     if preview_path is None and meta.preview_url:
-        # fetch directly into the addon dir as a tempfile, then let
-        # copy_thumbnail rename it. simpler than a separate fetch helper.
         from .utils.downloader import DownloadError
         from .utils.downloader import fetch as _fetch
 
@@ -272,15 +468,47 @@ def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
     if not cmd.resolve():
         error("SteamCMD is not configured. Set `steamcmd_path` in config.")
         return None
-    result = cmd.download_workshop_item(
-        workshop_id,
-        app_id=CSGO_APP_ID,
-        login=cfg.steam_login,
-        retries=cfg.steamcmd_retries,
+
+    expected = cmd.expected_workshop_path(workshop_id)
+
+    def attempt():
+        result = cmd.download_workshop_item(
+            workshop_id,
+            app_id=CSGO_APP_ID,
+            login=cfg.steam_login,
+            retries=1,  # retry policy here owns the outer retries
+        )
+        _record_subprocess(
+            "steamcmd",
+            ["+workshop_download_item", CSGO_APP_ID, workshop_id],
+            result.returncode,
+            result.stdout or "",
+            result.stderr or "",
+        )
+        return result
+
+    def is_success(result) -> bool:
+        if expected and expected.exists() and any(expected.glob("*.bsp")):
+            return True
+        return False
+
+    policy = RetryPolicy(
+        attempts=max(1, cfg.steamcmd_retries),
+        base_delay=5.0,
+        factor=2.0,
+        max_delay=60.0,
+    )
+    result = retry_until(
+        attempt,
+        predicate=is_success,
+        policy=policy,
+        on_retry=lambda i, _r, d: warn(
+            f"SteamCMD attempt {i} did not produce a .bsp; retrying in {d:.0f}s..."
+        ),
     )
     if result.returncode != 0:
         warn(f"SteamCMD exit code: {result.returncode}")
-    expected = cmd.expected_workshop_path(workshop_id)
+        _surface_known_error((result.stdout or "") + "\n" + (result.stderr or ""))
     if not expected or not expected.exists():
         error("Workshop content folder not found after SteamCMD run.")
         return None
@@ -298,9 +526,34 @@ def _decompile(cfg: Config, bsp: Path, output_dir: Path) -> Optional[Path]:
         error("BSPSource is not configured. Set `bspsource_path` in config.")
         return None
     ensure_dir(output_dir)
-    result = bs.decompile(bsp, output_dir)
+
+    def attempt():
+        result = bs.decompile(bsp, output_dir)
+        _record_subprocess(
+            "bspsource",
+            [str(bsp), "->", str(output_dir)],
+            result.returncode,
+            result.stdout or "",
+            result.stderr or "",
+        )
+        return result
+
+    def looks_ok(result) -> bool:
+        vmf = find_first(output_dir, ["*.vmf"])
+        return vmf is not None
+
+    policy = RetryPolicy(attempts=2, base_delay=3.0, factor=2.0, max_delay=15.0)
+    result = retry_until(
+        attempt,
+        predicate=looks_ok,
+        policy=policy,
+        on_retry=lambda i, _r, d: warn(
+            f"BSPSource attempt {i} did not produce a .vmf; retrying in {d:.0f}s..."
+        ),
+    )
     if result.returncode != 0:
         warn(f"BSPSource exit code: {result.returncode}")
+        _surface_known_error((result.stdout or "") + "\n" + (result.stderr or ""))
     vmf = find_first(output_dir, ["*.vmf"])
     if not vmf:
         error(
@@ -394,7 +647,6 @@ def _stage_vmf(vmf: Path, workspace: Path, mapname: str) -> Path:
     staged_maps = ensure_dir(staged_root / "maps")
     staged_vmf = staged_maps / f"{mapname}.vmf"
     shutil.copy2(vmf, staged_vmf)
-    # also copy any instance vmfs sitting alongside the source vmf
     src_dir = vmf.parent
     src_instances = src_dir / "instances"
     if src_instances.is_dir():
@@ -405,12 +657,6 @@ def _stage_vmf(vmf: Path, workspace: Path, mapname: str) -> Path:
     return staged_root
 
 
-# pre-copy bsp pakfile assets into the staged content tree so the importer
-# can resolve custom material/model/sound references against
-# `<s1_content_dir>/<asset>` instead of the user's csgo install (which only
-# has the base game's assets, not the workshop map's custom ones).
-# returns the count of files copied. directories that don't exist in the
-# source are silently skipped.
 _PAKFILE_CONTENT_SUBDIRS = (
     "materials",
     "models",
@@ -436,7 +682,6 @@ def _stage_assets(extracted_dir: Path, staged_root: Path) -> int:
             rel = item.relative_to(src)
             target = dst / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            # only copy if missing or older; skip overwrites of identical files
             if target.exists() and target.stat().st_size == item.stat().st_size:
                 continue
             shutil.copy2(item, target)
@@ -444,14 +689,6 @@ def _stage_assets(extracted_dir: Path, staged_root: Path) -> int:
     return copied
 
 
-# rename `<staged>/<bucket>/csgo/` -> `<staged>/<bucket>/csgo_legacy/` for
-# every pakfile content bucket. matches the .vmf rewrite the
-# `asset_path_csgo_subfolder` fixer does so the renamed paths still resolve
-# against the staged tree.
-#
-# idempotent: if `csgo_legacy/` already exists we merge `csgo/`'s contents
-# into it (skipping identical files) and then remove the now-empty csgo/.
-# returns the number of buckets we touched.
 def _rename_csgo_subdirs(staged_root: Path) -> int:
     if not staged_root.is_dir():
         return 0
@@ -465,8 +702,6 @@ def _rename_csgo_subdirs(staged_root: Path) -> int:
             old.rename(new)
             touched += 1
             continue
-        # merge: copy each file under csgo/ into csgo_legacy/ if missing or
-        # different size, then remove csgo/.
         for item in old.rglob("*"):
             if not item.is_file():
                 continue
@@ -481,8 +716,6 @@ def _rename_csgo_subdirs(staged_root: Path) -> int:
     return touched
 
 
-# show users the importer command line without invoking it (or any
-# windows-gated machinery). also previews the asset pre-copy plan.
 def _print_dry_run_plan(
     cfg: Config,
     vmf: Path,
@@ -504,7 +737,6 @@ def _print_dry_run_plan(
     mapname = _derive_mapname(bsp)
     s1_content_dir = workspace / "staged"
 
-    # preview the asset pre-copy
     extracted = workspace / "extracted"
     if extracted.is_dir():
         n = sum(1 for p in extracted.rglob("*") if p.is_file())
@@ -532,7 +764,6 @@ def _print_dry_run_plan(
             skip_deps=skip_deps,
         )
         info("Would run:")
-        # quote args containing spaces for copy-pasteability
         quoted = " ".join(_shlex_quote(a) for a in cmd)
         print(f"  {quoted}")
     else:
@@ -550,10 +781,8 @@ def _shlex_quote(s: str) -> str:
 
 
 def _derive_mapname(bsp: Path) -> str:
-    # safe-ify the bsp stem: lowercase, replace non-[a-z0-9_] with _.
     stem = bsp.stem.lower()
     sanitized = re.sub(r"[^a-z0-9_]+", "_", stem)
-    # reject names that have no alphanumerics (importer needs a real name).
     if not re.search(r"[a-z0-9]", sanitized):
         return "map"
     return sanitized
@@ -570,7 +799,6 @@ def _stage_and_import(
     no_merge_instances: bool,
     skip_deps: bool,
 ) -> int:
-    # validate s1/s2 install paths the importer needs
     if not cfg.csgo_install_path:
         error("csgo_install_path is not set; cannot locate s1/s2 gameinfo dirs.")
         return 1
@@ -605,10 +833,6 @@ def _stage_and_import(
         )
         return 1
 
-    # pre-copy any pakfile-extracted custom assets into the staged content
-    # tree so the importer can resolve them by relative path. without this,
-    # custom .vmt/.mdl/.wav references fail and the import aborts on the
-    # first missing dep.
     extracted_dir = workspace / "extracted"
     if extracted_dir.is_dir():
         n = _stage_assets(extracted_dir, s1_content_dir)
@@ -617,9 +841,6 @@ def _stage_and_import(
         else:
             info("No pakfile assets needed pre-copying.")
 
-    # match the .vmf-side `asset_path_csgo_subfolder` fixer rewrite of
-    # `csgo/` -> `csgo_legacy/`. safe to run unconditionally; it's a
-    # no-op when there's no csgo/ subdir under any of the staged buckets.
     renamed = _rename_csgo_subdirs(s1_content_dir)
     if renamed:
         info(f"Renamed `csgo/` -> `csgo_legacy/` under {renamed} staged content bucket(s).")
@@ -639,12 +860,20 @@ def _stage_and_import(
         no_merge_instances=no_merge_instances,
         skip_deps=skip_deps,
     )
+    _record_subprocess(
+        "import_map_community",
+        [addon, mapname],
+        result.returncode,
+        result.stdout or "",
+        result.stderr or "",
+    )
     if result.returncode != 0:
         warn(f"Importer exited with code {result.returncode}")
         if result.stdout:
             print(result.stdout)
         if result.stderr:
             print(result.stderr)
+        _surface_known_error((result.stdout or "") + "\n" + (result.stderr or ""))
         return 1
 
     success("Import completed. Open the addon in CS2 Workshop Tools to compile.")

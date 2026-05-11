@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Optional, Sequence
 
 from . import __version__
 from .commands import about_cmd as cmd_about
 from .commands import analyze as cmd_analyze
+from .commands import bug_report_cmd as cmd_bug_report
 from .commands import cleanup as cmd_cleanup
 from .commands import completion_cmd as cmd_completion
 from .commands import decompile as cmd_decompile
@@ -20,11 +22,17 @@ from .commands import launch_cmd as cmd_launch
 from .commands import list_cmd as cmd_list
 from .commands import port as cmd_port
 from .commands import publish_cmd as cmd_publish
+from .commands import selftest_cmd as cmd_selftest
 from .commands import status_cmd as cmd_status
 from .commands import tools_cmd as cmd_tools
 from .commands import verify_cmd as cmd_verify
 from .commands import walkthrough_cmd as cmd_walkthrough
+from .config import load_config
 from .logging_utils import error, setup_logging
+from .utils.run_log import start_logging
+
+# Commands that don't merit a run log (short-lived, no real work).
+_NO_LOG_COMMANDS = frozenset({"about", "completion", "explain"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,8 +75,21 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_about.register(sub)
     cmd_completion.register(sub)
     cmd_walkthrough.register(sub)
+    cmd_bug_report.register(sub)
+    cmd_selftest.register(sub)
 
     return parser
+
+
+def _resolve_log_workspace(config_path: Optional[str]) -> Path:
+    try:
+        cfg = load_config(config_path)
+        return Path(cfg.workspace_dir).expanduser()
+    except Exception:  # noqa: BLE001
+        # config may not exist yet (init); fall back to default.
+        from .config import DEFAULT_WORKSPACE_DIR
+
+        return Path(DEFAULT_WORKSPACE_DIR).expanduser()
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -76,6 +97,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     setup_logging(verbose=args.verbose)
 
+    command = getattr(args, "command", "") or ""
+    if command in _NO_LOG_COMMANDS:
+        return _dispatch(args)
+
+    workspace = _resolve_log_workspace(args.config)
+    with start_logging(workspace, command):
+        return _dispatch(args)
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     try:
         return args.func(args)
     except KeyboardInterrupt:

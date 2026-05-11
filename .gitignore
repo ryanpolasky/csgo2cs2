@@ -33,3 +33,7 @@ workspace/
 
 # Local config (may contain steam username)
 config.local.json
+
+# csgo2cs2 run logs and bug reports (added in PR7 resilience)
+logs/
+bug-reports/

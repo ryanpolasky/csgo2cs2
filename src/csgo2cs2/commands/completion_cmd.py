@@ -29,6 +29,8 @@ SUBCOMMANDS = (
     "completion",
     "walkthrough",
     "tour",
+    "bug-report",
+    "selftest",
 )
 
 SHELLS = ("bash", "zsh", "powershell")

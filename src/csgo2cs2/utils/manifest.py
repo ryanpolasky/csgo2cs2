@@ -1,8 +1,9 @@
-# track install-side files for cleanup.
+# track install-side files for cleanup, and per-stage state for resume.
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,6 +37,42 @@ class WorkshopMeta:
     fetched_at: Optional[float] = None
 
 
+# Stage state values used by the port pipeline. Pipeline writes one of
+# these into manifest.stages[<stage_name>] after each stage runs.
+STAGE_PENDING = "pending"
+STAGE_RUNNING = "running"
+STAGE_DONE = "done"
+STAGE_FAILED = "failed"
+STAGE_SKIPPED = "skipped"
+
+# Canonical stage names in pipeline order. Centralized here so other
+# modules (status_cmd, walkthrough, tests) can reference the same list.
+PORT_STAGES: tuple[str, ...] = (
+    "download",
+    "inspect",
+    "extract",
+    "decompile",
+    "analyze",
+    "import",
+)
+
+
+@dataclass
+class StageRecord:
+    name: str
+    status: str = STAGE_PENDING
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+    detail: str = ""  # free-form note: error message, file count, etc.
+
+    @property
+    def elapsed(self) -> Optional[float]:
+        if self.started_at is None:
+            return None
+        end = self.ended_at if self.ended_at is not None else time.time()
+        return end - self.started_at
+
+
 @dataclass
 class PortManifest:
     workshop_id: str
@@ -44,6 +81,8 @@ class PortManifest:
     patched_files: List[str] = field(default_factory=list)
     renamed_files: List[RenamedFile] = field(default_factory=list)
     workshop_meta: Optional[WorkshopMeta] = None
+    stages: Dict[str, StageRecord] = field(default_factory=dict)
+    last_args: Dict[str, Any] = field(default_factory=dict)
 
     def record_copy(self, src: Path, dest: Path, overwrote: bool) -> None:
         self.copied_files.append(
@@ -61,10 +100,44 @@ class PortManifest:
     def record_workshop_meta(self, meta: WorkshopMeta) -> None:
         self.workshop_meta = meta
 
+    def start_stage(self, name: str) -> StageRecord:
+        rec = self.stages.get(name)
+        if rec is None:
+            rec = StageRecord(name=name)
+            self.stages[name] = rec
+        rec.status = STAGE_RUNNING
+        rec.started_at = time.time()
+        rec.ended_at = None
+        rec.detail = ""
+        return rec
+
+    def finish_stage(self, name: str, status: str, detail: str = "") -> StageRecord:
+        rec = self.stages.get(name) or StageRecord(name=name)
+        self.stages[name] = rec
+        rec.status = status
+        rec.ended_at = time.time()
+        if detail:
+            rec.detail = detail
+        return rec
+
+    def stage_is_done(self, name: str) -> bool:
+        rec = self.stages.get(name)
+        return rec is not None and rec.status == STAGE_DONE
+
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(asdict(self), f, indent=2)
+        from .atomic import write_json
+
+        data: Dict[str, Any] = {
+            "workshop_id": self.workshop_id,
+            "addon_name": self.addon_name,
+            "copied_files": [asdict(c) for c in self.copied_files],
+            "patched_files": list(self.patched_files),
+            "renamed_files": [asdict(r) for r in self.renamed_files],
+            "workshop_meta": asdict(self.workshop_meta) if self.workshop_meta else None,
+            "stages": {k: asdict(v) for k, v in self.stages.items()},
+            "last_args": dict(self.last_args),
+        }
+        write_json(path, data)
 
     @classmethod
     def load(cls, path: Path) -> PortManifest:
@@ -85,9 +158,31 @@ class PortManifest:
                 time_updated=meta_raw.get("time_updated"),
                 fetched_at=meta_raw.get("fetched_at"),
             )
+        stages_raw = data.pop("stages", {}) or {}
+        stages: Dict[str, StageRecord] = {}
+        if isinstance(stages_raw, dict):
+            for k, v in stages_raw.items():
+                if not isinstance(v, dict):
+                    continue
+                try:
+                    stages[k] = StageRecord(
+                        name=str(v.get("name", k)),
+                        status=str(v.get("status", STAGE_PENDING)),
+                        started_at=v.get("started_at"),
+                        ended_at=v.get("ended_at"),
+                        detail=str(v.get("detail", "")),
+                    )
+                except (TypeError, ValueError):
+                    continue
+        last_args = data.pop("last_args", {}) or {}
+        if not isinstance(last_args, dict):
+            last_args = {}
+        # remaining keys: workshop_id, addon_name -- forward to ctor
         return cls(
             copied_files=copied,
             renamed_files=renamed,
             workshop_meta=meta,
+            stages=stages,
+            last_args=last_args,
             **data,
         )

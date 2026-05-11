@@ -78,6 +78,39 @@ def register(subparsers) -> None:
             "exists. Off by default; soft-fails if Steam can't be reached."
         ),
     )
+    p.add_argument(
+        "--restart",
+        action="store_true",
+        help=(
+            "Wipe the prior manifest stage state for this workshop ID and start "
+            "from scratch. Default behavior is to resume from the first non-done "
+            "stage."
+        ),
+    )
+    p.add_argument(
+        "--no-resume",
+        action="store_true",
+        help=(
+            "Re-run every stage even if the manifest marks it done. Does not "
+            "wipe the manifest (use --restart for that)."
+        ),
+    )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Allow the importer to write into an existing CS2 addon directory "
+            "with the same --addon name. Off by default to prevent accidents."
+        ),
+    )
+    p.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help=(
+            "Skip the preflight environment check before downloading. "
+            "Equivalent to setting CSGO2CS2_SKIP_PREFLIGHT=1."
+        ),
+    )
     p.set_defaults(func=run)
 
 
@@ -98,6 +131,10 @@ def run(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             export_images=args.export_images,
             auto_addoninfo=args.auto_addoninfo,
+            resume=not args.no_resume,
+            restart=args.restart,
+            overwrite=args.overwrite,
+            skip_preflight=args.skip_preflight,
         )
     except WindowsRequiredError as exc:
         if args.skip_import:

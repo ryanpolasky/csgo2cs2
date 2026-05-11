@@ -175,6 +175,10 @@ csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --skip-import       # cros
 csgo2cs2 port "<workshop-url-or-id>" --addon my_addon --auto --dry-run    # show fixer plan + would-run importer cmd
 csgo2cs2 port <id> --addon <name> --export-images <dir>                   # also save preview + metadata.json
 csgo2cs2 port <id> --addon <name> --auto-addoninfo                        # populate addoninfo.json from workshop metadata
+csgo2cs2 port <id> --addon <name> --restart                               # wipe prior stage state and start over
+csgo2cs2 port <id> --addon <name> --no-resume                             # re-run every stage but keep manifest
+csgo2cs2 port <id> --addon <name> --overwrite                             # allow writing into an existing addon dir
+csgo2cs2 port <id> --addon <name> --skip-preflight                        # bypass preflight checks (not recommended)
 
 # manage prior ports
 csgo2cs2 list                                   # list prior ports under workspace_dir
@@ -198,6 +202,10 @@ csgo2cs2 walkthrough --from port --workshop <id> --addon my_addon
 csgo2cs2 tour                                   # alias of `walkthrough`
 csgo2cs2 about                                  # version, attribution, links
 csgo2cs2 completion bash                        # shell completion (also: zsh, powershell)
+csgo2cs2 selftest                               # synthetic pipeline test (no Steam, no CS2; <1s)
+csgo2cs2 selftest --with-tools                  # also invoke SteamCMD/BSPSource as a smoke check
+csgo2cs2 bug-report                             # bundle diagnostic info into a zip for github issues
+csgo2cs2 bug-report -o /tmp/report.zip          # custom output path
 ```
 
 ## Findings
@@ -464,6 +472,171 @@ A few smaller knobs that do not fit anywhere else:
   the fixers would do; `port --dry-run` prints the asset pre-copy plan
   and the would-run importer command line. Neither writes anything.
 
+## Resilience
+
+`port` is the kind of pipeline that will fail at least once before it
+succeeds. The failure modes are predictable (Steam logs you out
+mid-download, BSPSource crashes on a weird BSP, the importer dies
+halfway through, Steam's daily quota kicks in), so the tool is built
+to recover from them gracefully rather than start over.
+
+### Preflight checks
+
+Before `port` writes anything or contacts Steam, it runs a battery of
+checks: tool paths exist and are executable, `cs2_addons_path` is
+writable, free disk space is at least 2 GB, the addon name is valid,
+`workspace_dir` is below the Windows MAX_PATH safe budget, and the
+install patches have been applied. Failures are reported up front as a
+single "fix these N things and retry" message:
+
+```
+[error] Preflight blocked the port. Fix these and re-run:
+[ERROR] tool_not_on_disk_steamcmd_path: steamcmd_path = '/totally/fake' does not exist on disk.
+        hint: Run `csgo2cs2 tools install` or update the path in config.
+[ERROR] cs2_addons_path_not_writable: cs2_addons_path = C:\...\game\csgo_addons is not writable.
+        hint: Close CS2 and Hammer 2 if open. On Windows, if the install lives under
+              Program Files, run your terminal as Administrator.
+```
+
+`--skip-preflight` (or `CSGO2CS2_SKIP_PREFLIGHT=1`) bypasses it for
+users who know what they are doing.
+
+### Stage-resume
+
+The port pipeline runs six stages: `download`, `inspect`, `extract`,
+`decompile`, `analyze`, and `import`. Each stage's status is recorded
+into `<workspace>/<workshop_id>/manifest.json` under a `stages` block:
+
+```json
+{
+  "stages": {
+    "download": {"status": "done", "started_at": ..., "ended_at": ..., "detail": "..."},
+    "decompile": {"status": "failed", "detail": "BSPSource JVM crash"}
+  }
+}
+```
+
+If the importer dies on a 4 GB workshop map, you can re-run the exact
+same `port` command and only the failed stages re-run. Two flags
+override the default behavior:
+
+- `--restart` — wipe prior stage state and start from scratch.
+- `--no-resume` — re-run every stage but keep the existing manifest.
+
+The pipeline also prints a stage summary at the end so it is obvious
+where time went:
+
+```
+Stage summary:
+  download    done         3.2s
+  inspect     done         0.0s
+  extract     done         0.4s
+  decompile   done        93.1s
+  analyze     done         0.1s
+  import      done        14.7s
+```
+
+### Retry and backoff
+
+The pipeline wraps the known-flakey operations (SteamCMD workshop
+download, BSPSource decompile) in an exponential-backoff retry loop.
+`steamcmd_retries` in your config controls the SteamCMD attempt
+count (default 3); BSPSource gets 2 attempts. Transient failures
+("workshop item temporarily unavailable", "Java did not start") retry
+without user intervention.
+
+### Run logs
+
+Every invocation (except short-lived `about`, `completion`, `explain`)
+tees its full stdout, stderr, and any subprocess output to
+`<workspace>/logs/<run-id>.log`. The last 25 logs are kept and older
+ones are pruned automatically. When something breaks at 2 a.m. you
+have one file to share. ANSI color codes are stripped from the log
+copy so the file pastes cleanly into a GitHub issue.
+
+Set `CSGO2CS2_NO_LOG=1` if you want to disable run-log capture for a
+single run.
+
+### Error remediation hints
+
+Subprocess output (SteamCMD, BSPSource, the import script, bspzip,
+VPKEdit) is matched against a registry of known error patterns. When
+a pattern matches, the tool prints the matching hint right after
+the error:
+
+```
+[warn] SteamCMD exit code: 1
+[warn] hint (steam_login_denied): SteamCMD needs Steam Guard. Run
+       `steamcmd +login <username>` once interactively to cache
+       credentials, then re-run `csgo2cs2 port`.
+```
+
+The registry covers the predictable failure modes: Steam Guard
+prompts, rate limiting, disk full, Java missing, BSPSource JVM
+crashes, bspProtect protection, the importer's `.decode()`
+AttributeError on un-patched installs, vpk.signatures permission
+errors, paths with spaces, and a few more.
+
+### Bug reports
+
+`csgo2cs2 bug-report` collects everything I would otherwise have to
+ask you to send me into a single zip:
+
+```bash
+csgo2cs2 bug-report                          # default: <workspace>/bug-reports/bug-report-<ts>.zip
+csgo2cs2 bug-report -o /tmp/report.zip       # custom output path
+csgo2cs2 bug-report --logs 3 --manifests 2   # tune what gets included
+```
+
+Contents: `summary.json` (csgo2cs2 version, Python version, platform,
+argv, generated_at), `env.txt` (sanitized — Steam Guard codes, API
+keys, and anything matching the secret pattern is replaced with
+`<redacted>`), `config.json` (without password fields, which the tool
+never stores), `doctor.json` (the structured doctor output),
+`drift.json` if the workspace has one, the most recent run logs under
+`logs/`, and the most recent port manifests under `manifests/`.
+
+Attach the resulting zip to the issue and the failure mode is
+reproducible without back-and-forth.
+
+### Selftest
+
+`csgo2cs2 selftest` runs a synthetic end-to-end test of the
+analyze/fix pipeline. It does **not** touch Steam, CS2, the
+filesystem outside a tempdir, or any external tool. It runs in under
+a second and checks:
+
+- the analyzer detects the documented issues in a known-bad VMF
+- the fixers apply and produce a structurally sound output
+- atomic writes survive a thread race
+- the manifest round-trips its stage state through save/load
+
+`--with-tools` adds a smoke test that invokes `steamcmd +quit` and
+`bspsource --help` to verify the configured external tools are
+actually runnable. Useful before pointing real maps at the pipeline:
+
+```bash
+csgo2cs2 selftest                  # 7 internal checks, <1s
+csgo2cs2 selftest --with-tools     # also confirms SteamCMD/BSPSource start
+```
+
+### Windows long-path handling
+
+On Windows, paths over 260 characters (MAX_PATH) fail in most
+subprocess tools we shell out to. The preflight check warns when
+`workspace_dir` is close to the safe budget (200 chars), and the
+recommendation is always the same: move `workspace_dir` to a short
+root like `C:\csgo2cs2`. Internal I/O uses the `\\?\` extended-path
+prefix on Windows to dodge the limit where possible, but external
+tools generally lack the long-path manifest, so the only reliable fix
+is a short workspace root.
+
+### Atomic writes
+
+All manifests, configs, and drift state are written via
+`tempfile-then-rename` so a power loss or Ctrl-C mid-write cannot
+corrupt them. The previous contents survive any rename failure.
+
 ## Known limitations
 
 - **Windows-only `port`.** Decompile fidelity is bounded by BSPSource:
@@ -533,6 +706,8 @@ src/csgo2cs2/
     about_cmd.py         # csgo2cs2 about
     completion_cmd.py    # csgo2cs2 completion bash|zsh|powershell
     walkthrough_cmd.py   # csgo2cs2 walkthrough (alias: tour)
+    bug_report_cmd.py    # csgo2cs2 bug-report -> diagnostic zip
+    selftest_cmd.py      # csgo2cs2 selftest (synthetic pipeline test)
   tools/                 # external tool adapters
     base.py
     steamcmd.py
@@ -555,7 +730,9 @@ src/csgo2cs2/
     clip_textures.py     # texture_clip_custom -> tools/toolsclip
     spawns.py            # opt-in --fix-spawns ct|t legacy spawn rewriter
   utils/                 # url, paths, backup, manifest, steam, downloader,
-                         #   tools_registry, workshop_meta, addoninfo, drift helpers
+                         #   tools_registry, workshop_meta, addoninfo, drift,
+                         #   atomic, long_path, retry, run_log, known_errors,
+                         #   preflight helpers
 tests/                   # pytest suite
   fixtures/              # check-in VMF samples for snapshot tests
 ```
