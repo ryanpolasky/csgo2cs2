@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from csgo2cs2.config import Config
 from csgo2cs2.pipeline import (
+    _CONTENTDIR_MARKER,
+    _patch_importer_contentdir,
     _collect_staged_refs,
     _content_addon_maps_dir,
     _ensure_prefab_refs_stub,
@@ -209,3 +211,37 @@ def test_importer_success_marker_rejects_error_summary():
 def test_importer_success_marker_empty_input():
     assert _importer_logged_successful_import("") is False
     assert _importer_logged_successful_import(None) is False  # type: ignore[arg-type]
+
+
+def test_patch_importer_contentdir_applies(tmp_path):
+    script = tmp_path / "import_map_community.py"
+    script.write_text(
+        '#!/usr/bin/env python3\n'
+        'importRefsCmd = "source1import -retail -nop4 -nop4sync '
+        '-src1gameinfodir \\"%s\\" -s2addon %s -game csgo '
+        '-usefilelist \\"%s\\"" % ( s1gamecsgo, s2addon, temp_refs )\n'
+        'importcmd = "source1import -retail -nop4 -nop4sync '
+        '-src1gameinfodir \\"" + s1gamecsgo + "\\" -s2addon " '
+        '+ s2addon + " -game csgo -usefilelist \\"" + refsFile + "\\""'
+        '\n',
+        encoding="utf-8",
+    )
+    assert _patch_importer_contentdir(script) is True
+    text = script.read_text()
+    assert "s1contentcsgo" in text
+    assert _CONTENTDIR_MARKER in text
+
+
+def test_patch_importer_contentdir_idempotent(tmp_path):
+    script = tmp_path / "import_map_community.py"
+    script.write_text(
+        f'already patched\n{_CONTENTDIR_MARKER}\n',
+        encoding="utf-8",
+    )
+    assert _patch_importer_contentdir(script) is False
+
+
+def test_patch_importer_contentdir_unrecognised_baseline(tmp_path):
+    script = tmp_path / "import_map_community.py"
+    script.write_text("# unknown version\n", encoding="utf-8")
+    assert _patch_importer_contentdir(script) is False

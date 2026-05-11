@@ -957,6 +957,77 @@ def _ensure_prefab_refs_stub(cfg: Config, addon: str, mapname: str) -> None:
     _write_prefab_refs_from_staged(cfg, addon, mapname, staged_root=None)
 
 
+
+# -- Keller script content-dir fix ------------------------------------------
+# import_map_community.py's second/third source1import invocations
+# (`-usefilelist`) omit `-src1contentdir`, so source1import can't find
+# custom workshop .vmt/.mdl files under staged/.  Only the FIRST pass
+# (VMF import) includes it.  Without this patch every "materials/
+# recoil_master/*.vmt" ref fails with "Found no files matching
+# specification" and the per-asset conversion phase no-ops.
+#
+# We detect and patch this at import-time rather than at doctor-fix time
+# because (a) the Keller script may be re-downloaded / overwritten by
+# Steam updates, and (b) the fix is a two-line text replacement that's
+# safe to re-apply any number of times.
+
+_CONTENTDIR_MARKER = "# csgo2cs2: patched -src1contentdir into -usefilelist"
+
+_KELLER_USEFILELIST_MDLS = (
+    'importRefsCmd = "source1import -retail -nop4 -nop4sync '
+    '-src1gameinfodir \\"%s\\" -s2addon %s -game csgo '
+    '-usefilelist \\"%s\\"" % ( s1gamecsgo, s2addon, temp_refs )'
+)
+_KELLER_USEFILELIST_MDLS_FIXED = (
+    'importRefsCmd = "source1import -retail -nop4 -nop4sync '
+    '-src1gameinfodir \\"%s\\" -src1contentdir \\"%s\\" -s2addon %s -game csgo '
+    '-usefilelist \\"%s\\"" % ( s1gamecsgo, s1contentcsgo, s2addon, temp_refs )'
+)
+
+_KELLER_USEFILELIST_REFS = (
+    'importcmd = "source1import -retail -nop4 -nop4sync '
+    '-src1gameinfodir \\"" + s1gamecsgo + "\\" -s2addon " '
+    '+ s2addon + " -game csgo -usefilelist \\"" + refsFile + "\\""'
+)
+_KELLER_USEFILELIST_REFS_FIXED = (
+    'importcmd = "source1import -retail -nop4 -nop4sync '
+    '-src1gameinfodir \\"" + s1gamecsgo + "\\" -src1contentdir \\"" '
+    '+ s1contentcsgo + "\\" -s2addon " '
+    '+ s2addon + " -game csgo -usefilelist \\"" + refsFile + "\\""'
+)
+
+
+def _patch_importer_contentdir(script_path: Path) -> bool:
+    """Patch import_map_community.py to add -src1contentdir to the
+    -usefilelist invocations.  Returns True if patched, False if already
+    patched or if the script doesn't match the expected baseline."""
+    try:
+        text = script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if _CONTENTDIR_MARKER in text:
+        return False  # already patched
+    changed = False
+    if _KELLER_USEFILELIST_MDLS in text:
+        text = text.replace(
+            _KELLER_USEFILELIST_MDLS, _KELLER_USEFILELIST_MDLS_FIXED
+        )
+        changed = True
+    if _KELLER_USEFILELIST_REFS in text:
+        text = text.replace(
+            _KELLER_USEFILELIST_REFS, _KELLER_USEFILELIST_REFS_FIXED
+        )
+        changed = True
+    if not changed:
+        return False
+    text += f"\n{_CONTENTDIR_MARKER}\n"
+    try:
+        script_path.write_text(text, encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def _stage_and_import(
     cfg: Config,
     vmf: Path,
@@ -986,12 +1057,18 @@ def _stage_and_import(
         importer_path=importer_path,
         python_executable=cfg.python_executable,
     )
-    if not importer.resolve():
+    resolved = importer.resolve()
+    if not resolved:
         error(
             "import_map_community.py was not found. Run `csgo2cs2 tools install` "
             "to fetch a known-good copy, or set `import_script_path` in config."
         )
         return 1
+    if _patch_importer_contentdir(resolved):
+        info(
+            "Patched import_map_community.py: added -src1contentdir "
+            "to -usefilelist invocations (fixes workshop texture import)."
+        )
 
     mapname = _derive_mapname(bsp)
     s1_content_dir = _stage_vmf(vmf, workspace, mapname)
