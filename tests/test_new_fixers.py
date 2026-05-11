@@ -9,8 +9,13 @@ from csgo2cs2.fixers import apply_all
 def _vmf(extra: str = "") -> str:
     # `sky_cs_office` is in WIKI_CONFIRMED_CS2_SKIES so it doesn't trip
     # skybox_unknown, leaving us with a clean baseline for testing the
-    # other fixers without an unrelated finding firing.
+    # other fixers without an unrelated finding firing. The
+    # versioninfo/visgroups/viewsettings preamble keeps
+    # vmf_missing_top_level_keys quiet on this baseline too.
     return (
+        "versioninfo\n{\n}\n"
+        "visgroups\n{\n}\n"
+        "viewsettings\n{\n}\n"
         "world\n{\n"
         '\t"classname" "worldspawn"\n'
         '\t"skyname" "sky_cs_office"\n'
@@ -133,3 +138,4 @@ def test_fixer_dedupe_after_analyze_findings_no_more_dupes():
     new_text, _ = apply_all(text, a.findings)
     a2 = analyze_vmf(new_text)
     assert not any(f.issue_id == "light_environment_count" for f in a2.findings)
+

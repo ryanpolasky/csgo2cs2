@@ -132,6 +132,15 @@ def test_analyze_command_report_json_to_file(tmp_path):
 
 def test_analyze_command_report_json_zero_findings_returns_zero(tmp_path):
     clean = """\
+versioninfo
+{
+}
+visgroups
+{
+}
+viewsettings
+{
+}
 world
 {
 \t"id" "1"
@@ -163,3 +172,4 @@ entity
     parsed = json.loads(buf.getvalue())
     assert rc == 0
     assert parsed["summary"]["total"] == 0
+

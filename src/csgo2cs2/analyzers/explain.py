@@ -84,6 +84,28 @@ _EXPLANATIONS: Dict[str, Explanation] = {
         ),
         refs=[_REF_KELLER],
     ),
+    "vmf_missing_top_level_keys": Explanation(
+        issue_id="vmf_missing_top_level_keys",
+        title="VMF is missing top-level block(s) the cs2 importer requires.",
+        what=(
+            "BSPSource's decompiled output omits one or more of "
+            "`versioninfo`, `visgroups`, `viewsettings` -- top-level blocks "
+            "that the cs2 importer's CVMFtoVMAP converter treats as required."
+        ),
+        why=(
+            "Without these blocks, source1import aborts with `Missing a "
+            "required top-level key.` after running VBSP -- you'll see the "
+            ".vmap copied into content/csgo_addons/.../maps/ but no .vmap_c "
+            "ever gets compiled, and the import exits with code 1."
+        ),
+        fix=(
+            "auto -- `csgo2cs2 analyze --fix` (and `--auto` on port) inserts "
+            "minimal default blocks for any missing top-level key. The added "
+            "blocks are inert defaults so existing world/entity data is "
+            "untouched."
+        ),
+        refs=[_REF_BSPSRC, _REF_KELLER],
+    ),
     "skybox_missing": Explanation(
         issue_id="skybox_missing",
         title="No skybox set on worldspawn.",
@@ -400,3 +422,4 @@ def render(exp: Explanation) -> str:
         for r in exp.refs:
             lines.append(f"  - {r}")
     return "\n".join(lines)
+

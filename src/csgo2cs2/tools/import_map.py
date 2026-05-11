@@ -100,6 +100,7 @@ class ImportMapTool:
         stream: bool = False,
         on_line: Callable[[str, str], None] | None = None,
         extra_path_dirs: Sequence[Path] | None = None,
+        stdin_input: str | None = None,
     ) -> subprocess.CompletedProcess:
         """Invoke the importer. When `stream=True`, stdout/stderr are
         relayed to `on_line(stream_name, line)` as they arrive (default
@@ -110,6 +111,11 @@ class ImportMapTool:
         to make sure resourcecompiler.exe (which Valve's script invokes
         unqualified) is on PATH even if the user hasn't added cs2_bin_path
         to their system PATH.
+
+        `stdin_input` is fed to the importer's stdin and stdin is then
+        closed. Valve's importer issues an `Enter to Continue, Esc to
+        Quit` prompt on startup -- without piping a newline the process
+        blocks forever waiting on a TTY that's never going to type back.
         """
         require_windows("import_map_community.py")
         cmd = self.build_command(
@@ -122,9 +128,16 @@ class ImportMapTool:
         env = _env_with_extra_path(extra_path_dirs)
         if not stream:
             return subprocess.run(
-                cmd, check=False, capture_output=True, text=True, env=env
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                input=stdin_input,
             )
-        return _run_streaming(cmd, on_line=on_line, env=env)
+        return _run_streaming(
+            cmd, on_line=on_line, env=env, stdin_input=stdin_input
+        )
 
 
 def _env_with_extra_path(
@@ -144,6 +157,7 @@ def _run_streaming(
     cmd: Sequence[str],
     on_line: Callable[[str, str], None] | None,
     env: dict[str, str] | None = None,
+    stdin_input: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Spawn a subprocess and relay each line of stdout/stderr to
     `on_line(stream, line)` as it arrives, while also capturing the
@@ -160,12 +174,19 @@ def _run_streaming(
 
     proc = subprocess.Popen(
         list(cmd),
+        stdin=subprocess.PIPE if stdin_input is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,  # line-buffered
         env=env,
     )
+    if stdin_input is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(stdin_input)
+            proc.stdin.flush()
+        finally:
+            proc.stdin.close()
 
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []

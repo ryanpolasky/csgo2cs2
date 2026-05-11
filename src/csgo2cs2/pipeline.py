@@ -926,6 +926,9 @@ def _stage_and_import(
         if bin_dir.exists():
             extra_path_dirs.append(bin_dir)
 
+    # Valve's importer opens with `WARNING - this will overwrite... Enter to
+    # Continue, Esc to Quit` and blocks on stdin. Pre-confirm by feeding a
+    # newline; the user has already opted in by running the port command.
     heartbeat.start()
     try:
         result = importer.import_map(
@@ -936,6 +939,7 @@ def _stage_and_import(
             stream=True,
             on_line=_on_line,
             extra_path_dirs=extra_path_dirs,
+            stdin_input="\n",
         )
     finally:
         heartbeat.stop()

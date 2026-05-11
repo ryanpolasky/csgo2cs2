@@ -247,3 +247,41 @@ def test_heartbeat_can_start_and_stop_without_subprocess():
     hb.saw_line()
     hb.stop()  # would deadlock if the thread didn't exit on event
 
+
+def test_run_streaming_feeds_stdin_input():
+    """The importer waits on `Enter to Continue, Esc to Quit` -- the
+    subprocess must receive the newline we feed it, otherwise it hangs."""
+    # echo what we read from stdin back on stdout so we can assert.
+    result = _run_streaming(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('read=' + repr(sys.stdin.read()))",
+        ],
+        on_line=lambda *_a: None,
+        stdin_input="\n",
+    )
+    assert result.returncode == 0
+    assert "read=" in result.stdout
+    assert "\\n" in result.stdout  # the newline we piped, repr'd
+
+
+def test_import_map_passes_stdin_input_through_run(tmp_path):
+    """Non-streaming path also has to honor stdin_input, since we use it
+    for unit tests that call import_map() directly."""
+    importer = _resolved_importer(tmp_path)
+    tool = ImportMapTool(importer_path=str(importer), python_executable="py3")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["input"] = kwargs.get("input")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with (
+        patch("csgo2cs2.tools.import_map.require_windows", lambda *_a, **_k: None),
+        patch("csgo2cs2.tools.import_map.subprocess.run", fake_run),
+    ):
+        tool.import_map(_inputs(tmp_path), stdin_input="\n")
+
+    assert captured["input"] == "\n"
+

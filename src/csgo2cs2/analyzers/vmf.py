@@ -322,6 +322,31 @@ def analyze_vmf(
     skies = set(cs2_sky_list) if cs2_sky_list is not None else KNOWN_CS2_SKIES
     unsupported = set(UNSUPPORTED_ENTITIES) | set(extra_unsupported_entities or [])
 
+    # CVMFtoVMAP (the s2 importer's internal s1->s2 vmf converter) bails
+    # with `Missing a required top-level key.` if any of these blocks
+    # aren't present. bspsource emits versioninfo + visgroups + world +
+    # entities, but routinely omits viewsettings -- ensure it's there.
+    missing_top_level: List[str] = []
+    for name in ("versioninfo", "visgroups", "viewsettings"):
+        # column-0 anchored to avoid matching nested keys with the same name.
+        if not re.search(rf"(?m)^{name}\s*\n\s*\{{", text):
+            missing_top_level.append(name)
+    if missing_top_level:
+        analysis.findings.append(
+            Finding(
+                issue_id="vmf_missing_top_level_keys",
+                severity="error",
+                message=(
+                    "VMF is missing required top-level block(s): "
+                    + ", ".join(missing_top_level)
+                    + ". CS2's importer (CVMFtoVMAP) refuses to construct a map "
+                    "document without these."
+                ),
+                fixable=True,
+                context={"missing": missing_top_level},
+            )
+        )
+
     # check skybox compatibility
     sky_match = SKYNAME_RE.search(text)
     if sky_match:
@@ -567,3 +592,4 @@ _REBUILD_MESSAGES: Dict[str, str] = {
         "the cs2 import re-bakes brush UVs."
     ),
 }
+
