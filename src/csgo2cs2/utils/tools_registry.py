@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class ToolDownload:
     extract: bool = False
     # the entry inside the extracted tree to point a tool path at
     # (relative to the extraction root). None for stand-alone files.
-    binary_subpath: Optional[str] = None
+    binary_subpath: str | None = None
 
 
 # return the platform key used in the registry below.

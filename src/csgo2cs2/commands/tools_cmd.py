@@ -12,7 +12,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Tuple
 
 from ..config import DEFAULT_CONFIG_DIR, load_config, save_config
 from ..logging_utils import error, header, info, success, warn
@@ -117,7 +117,7 @@ def _make_executable(path: Path) -> None:
 
 
 # install a single tool entry. returns (config_attr, resolved_path).
-def _install_tool(tool: str, force: bool) -> Optional[Tuple[str, Path]]:
+def _install_tool(tool: str, force: bool) -> Tuple[str, Path] | None:
     plat = current_platform()
     cache_root = _tools_root() / tool
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -150,7 +150,7 @@ def _install_archive_tool(
     cache_root: Path,
     config_attr: str,
     force: bool,
-) -> Optional[Tuple[str, Path]]:
+) -> Tuple[str, Path] | None:
     archive = cache_root / spec.filename
     extract_dir = cache_root / "extracted"
 
@@ -181,7 +181,7 @@ def _install_archive_tool(
     return config_attr, binary
 
 
-def _find_binary(root: Path, subpath: Optional[str]) -> Optional[Path]:
+def _find_binary(root: Path, subpath: str | None) -> Path | None:
     if not subpath:
         return None
     direct = root / subpath
@@ -202,7 +202,7 @@ def _find_binary(root: Path, subpath: Optional[str]) -> Optional[Path]:
     return None
 
 
-def _persist_config_paths(config_path: Optional[str], updates: List[Tuple[str, Path]]) -> None:
+def _persist_config_paths(config_path: str | None, updates: List[Tuple[str, Path]]) -> None:
     if not updates:
         return
     cfg = load_config(config_path)

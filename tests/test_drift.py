@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -19,10 +18,10 @@ from csgo2cs2.utils import drift
 
 @dataclass
 class FakeCfg:
-    csgo_install_path: Optional[str]
-    cs2_bin_path: Optional[str]
+    csgo_install_path: str | None
+    cs2_bin_path: str | None
     workspace_dir: str
-    import_script_path: Optional[str] = None
+    import_script_path: str | None = None
 
 
 def _make_install(tmp_path: Path) -> tuple[FakeCfg, Path, Path]:

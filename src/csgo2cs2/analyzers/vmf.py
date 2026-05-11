@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Set, Tuple
 
 # wiki-confirmed cs2 skies, as documented at
 # https://developer.valvesoftware.com/wiki/Counter-Strike_2_Workshop_Tools/CS2_Sky_List
@@ -266,7 +266,7 @@ class VmfAnalysis:
     findings: List[Finding] = field(default_factory=list)
     total_entities: int = 0
     class_counts: Dict[str, int] = field(default_factory=dict)
-    skyname: Optional[str] = None
+    skyname: str | None = None
     asset_refs: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, object]:
@@ -315,8 +315,8 @@ def pick_smart_skybox(skyname: str, default_skybox: str = "sky_cs_office") -> st
 def analyze_vmf(
     text: str,
     default_skybox: str = "sky_cs_office",
-    cs2_sky_list: Optional[Iterable[str]] = None,
-    extra_unsupported_entities: Optional[Iterable[str]] = None,
+    cs2_sky_list: Iterable[str] | None = None,
+    extra_unsupported_entities: Iterable[str] | None = None,
 ) -> VmfAnalysis:
     analysis = VmfAnalysis()
     skies = set(cs2_sky_list) if cs2_sky_list is not None else KNOWN_CS2_SKIES

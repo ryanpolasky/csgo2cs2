@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List
 
 from .. import __version__
 from ..config import Config, config_path, load_config
@@ -229,12 +229,45 @@ def _stage_patches(
     return _run_subcommand(["doctor", "--fix"], args)
 
 
+def _maybe_offer_addon_scaffold(
+    args: argparse.Namespace,
+    addon: str,
+    *,
+    confirm_fn: ConfirmFn,
+) -> None:
+    from ..tools.addon_scaffold import (
+        addon_dir as _addon_dir,
+    )
+    from ..tools.addon_scaffold import (
+        create as _scaffold_create,
+    )
+
+    cfg = load_config(args.config)
+    target = _addon_dir(cfg, addon)
+    if target is None or target.exists():
+        return
+    info(f"Addon directory {target} does not exist yet.")
+    if not confirm_fn(
+        "Create it now? (Workshop Tools is not required for porting.)",
+        True,
+    ):
+        warn("Skipping. The port stage will fail in preflight; re-run with")
+        warn(f"`csgo2cs2 addon create {addon}` when you change your mind.")
+        return
+    try:
+        _scaffold_create(cfg, addon)
+    except (RuntimeError, FileExistsError) as exc:
+        warn(f"Could not scaffold addon: {exc}")
+        return
+    success(f"Created {target}.")
+
+
 def _stage_port(
     args: argparse.Namespace,
     *,
     confirm_fn: ConfirmFn,
     prompt_fn: PromptFn,
-) -> tuple[int, Optional[str]]:
+) -> tuple[int, str | None]:
     header("Step 4/6: Port a map")
     if args.workshop_url and args.addon:
         info(f"Using workshop ID/URL from --workshop: {args.workshop_url}")
@@ -258,13 +291,18 @@ def _stage_port(
             prompt_fn=prompt_fn,
         )
 
+    # Offer to scaffold the addon dir if it's missing -- Valve's importer
+    # hangs silently when the dir is absent, so making this explicit
+    # before the user gets stuck is part of the walkthrough's job.
+    _maybe_offer_addon_scaffold(args, addon, confirm_fn=confirm_fn)
+
     auto = confirm_fn(
         "Apply auto-fixes (skybox, entities, paths) without prompting per finding?",
         True,
     )
 
     auto_addoninfo = False
-    export_images: Optional[str] = None
+    export_images: str | None = None
     if is_windows():
         auto_addoninfo = confirm_fn(
             "Auto-populate addoninfo.json from the workshop metadata?",
@@ -335,7 +373,7 @@ def _stage_launch(
     return _run_subcommand(["launch", addon], args)
 
 
-def _stage_farewell(addon: Optional[str]) -> None:
+def _stage_farewell(addon: str | None) -> None:
     header("All done")
     if addon:
         success(f"Addon ready: {addon}")
@@ -439,7 +477,7 @@ def run(
     args: argparse.Namespace,
     *,
     prompt_fn: PromptFn = input,
-    confirm_fn: Optional[ConfirmFn] = None,
+    confirm_fn: ConfirmFn | None = None,
 ) -> int:
     # under `--yes`, the walkthrough is non-interactive: swap the prompt
     # stand-in so we never block on stdin. tests rely on this too --
@@ -465,7 +503,7 @@ def run(
         stages_to_run = list(STAGES[idx:])
         info(f"Resuming from stage: {args.from_stage}")
 
-    addon: Optional[str] = args.addon
+    addon: str | None = args.addon
 
     for stage in stages_to_run:
         if stage == "config":
@@ -499,3 +537,4 @@ def run(
 
     _stage_farewell(addon)
     return 0
+

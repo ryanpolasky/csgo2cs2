@@ -12,7 +12,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 def write_bytes(path: Path, data: bytes, *, mode: int = 0o644) -> Path:
@@ -56,7 +56,7 @@ def write_json(
     path: Path,
     obj: Any,
     *,
-    indent: Optional[int] = 2,
+    indent: int | None = 2,
     sort_keys: bool = False,
     mode: int = 0o644,
 ) -> Path:

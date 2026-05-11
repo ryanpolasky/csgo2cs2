@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 _QUERY_ID_RE = re.compile(r"[?&]id=(\d+)")
 _STEAM_PROTOCOL_RE = re.compile(r"CommunityFilePage/(\d+)")
@@ -11,7 +10,7 @@ _BARE_ID_RE = re.compile(r"^\d+$")
 
 
 # extract a workshop file id from a url or bare id.
-def parse_workshop_id(url_or_id: str) -> Optional[str]:
+def parse_workshop_id(url_or_id: str) -> str | None:
     if not url_or_id:
         return None
     s = url_or_id.strip()

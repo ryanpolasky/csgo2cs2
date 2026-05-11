@@ -19,7 +19,7 @@ import argparse
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from ..config import Config, load_config
 from ..logging_utils import error, header, info, success, warn
@@ -124,7 +124,7 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_output_path(cfg: Config, addon: str, override: Optional[str]) -> Path:
+def _resolve_output_path(cfg: Config, addon: str, override: str | None) -> Path:
     if override:
         return Path(override).expanduser()
     workspace = Path(cfg.workspace_dir).expanduser()

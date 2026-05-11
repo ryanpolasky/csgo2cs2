@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -59,7 +58,7 @@ def get_timeout() -> int:
         return DEFAULT_TIMEOUT
 
 
-def _resolve_tool(env_var: str, name: str, default_from_config: Optional[str]) -> Optional[str]:
+def _resolve_tool(env_var: str, name: str, default_from_config: str | None) -> str | None:
     """Resolve a tool path in priority order:
     1. explicit `env_var` override
     2. the path the user's saved config (~/.csgo2cs2/config.json) already
@@ -74,7 +73,7 @@ def _resolve_tool(env_var: str, name: str, default_from_config: Optional[str]) -
     return shutil.which(name)
 
 
-def _require_tool(env_var: str, name: str, default_from_config: Optional[str]) -> str:
+def _require_tool(env_var: str, name: str, default_from_config: str | None) -> str:
     """Fail the calling test cleanly if a required external tool is
     missing on the host. We do not auto-install -- CI is expected to
     have run `csgo2cs2 tools install` already."""

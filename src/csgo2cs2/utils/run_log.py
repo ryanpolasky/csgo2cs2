@@ -14,7 +14,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Optional, TextIO
+from typing import Iterator, List, TextIO
 
 # ANSI escape stripper for what we write to the log file. We want
 # colored terminal output but plain-text logs so they paste cleanly
@@ -76,9 +76,9 @@ class RunLog:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._fh: Optional[TextIO] = None
-        self._orig_stdout: Optional[TextIO] = None
-        self._orig_stderr: Optional[TextIO] = None
+        self._fh: TextIO | None = None
+        self._orig_stdout: TextIO | None = None
+        self._orig_stderr: TextIO | None = None
 
     def _open(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,19 +161,19 @@ class RunLog:
 # can fetch it without an explicit threading. Set in `start_logging()`.
 class _Current:
     def __init__(self) -> None:
-        self._log: Optional[RunLog] = None
+        self._log: RunLog | None = None
 
-    def set(self, log: Optional[RunLog]) -> None:
+    def set(self, log: RunLog | None) -> None:
         self._log = log
 
-    def get(self) -> Optional[RunLog]:
+    def get(self) -> RunLog | None:
         return self._log
 
 
 _CURRENT = _Current()
 
 
-def current() -> Optional[RunLog]:
+def current() -> RunLog | None:
     return _CURRENT.get()
 
 
@@ -214,7 +214,7 @@ def is_disabled() -> bool:
 @contextmanager
 def start_logging(
     workspace_dir: Path, command: str, *, keep: int = 25
-) -> Iterator[Optional[RunLog]]:
+) -> Iterator[RunLog | None]:
     """Open the run log, tee stdout/stderr to it, and yield the handle.
 
     No-ops (yields None) when:

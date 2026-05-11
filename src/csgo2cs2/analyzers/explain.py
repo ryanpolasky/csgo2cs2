@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 @dataclass(frozen=True)
@@ -374,7 +374,7 @@ _EXPLANATIONS: Dict[str, Explanation] = {
 }
 
 
-def get(issue_id: str) -> Optional[Explanation]:
+def get(issue_id: str) -> Explanation | None:
     return _EXPLANATIONS.get(issue_id)
 
 

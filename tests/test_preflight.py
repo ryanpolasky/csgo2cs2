@@ -86,24 +86,66 @@ def test_unset_steamcmd_is_error(tmp_path: Path) -> None:
     assert "tool_missing_steamcmd_path" in ids
 
 
-def test_addon_collision_blocks_by_default(tmp_path: Path) -> None:
+def _addon_with_prior_output(cfg, name: str) -> Path:
+    d = Path(cfg.cs2_addons_path) / name
+    (d / "maps").mkdir(parents=True)
+    (d / "addoninfo.gi").write_text('"AddonInfo" {}\n', encoding="utf-8")
+    (d / "maps" / "some_prior_map.vmap").write_text("// prior output\n", encoding="utf-8")
+    return d
+
+
+def test_addon_with_prior_output_blocks_by_default(tmp_path: Path) -> None:
+    """Prior port artifacts under maps/ must block re-import unless
+    --overwrite is set, so users don't silently clobber a tweaked addon."""
     cfg = _baseline_cfg(tmp_path)
-    existing = Path(cfg.cs2_addons_path) / "preexisting_addon"
-    existing.mkdir()
+    _addon_with_prior_output(cfg, "preexisting_addon")
     report = preflight.run_preflight(cfg, addon="preexisting_addon", skip_import=False)
     ids = {i.id for i in report.errors}
-    assert "addon_already_exists" in ids
+    assert "addon_has_prior_output" in ids
 
 
-def test_addon_collision_allowed_with_overwrite(tmp_path: Path) -> None:
+def test_addon_with_prior_output_allowed_with_overwrite(tmp_path: Path) -> None:
     cfg = _baseline_cfg(tmp_path)
-    existing = Path(cfg.cs2_addons_path) / "preexisting_addon"
-    existing.mkdir()
+    _addon_with_prior_output(cfg, "preexisting_addon")
     report = preflight.run_preflight(
         cfg, addon="preexisting_addon", skip_import=False, overwrite=True
     )
     ids = {i.id for i in report.errors}
-    assert "addon_already_exists" not in ids
+    assert "addon_has_prior_output" not in ids
+
+
+def test_addon_fresh_from_workshop_tools_passes(tmp_path: Path) -> None:
+    """An addon dir freshly created by Workshop Tools (or our own
+    scaffold) has addoninfo.gi + empty maps/. Preflight must accept
+    this without --overwrite -- it's the canonical first-port state."""
+    cfg = _baseline_cfg(tmp_path)
+    d = Path(cfg.cs2_addons_path) / "wt_addon"
+    (d / "maps").mkdir(parents=True)
+    (d / "addoninfo.gi").write_text('"AddonInfo" {}\n', encoding="utf-8")
+    report = preflight.run_preflight(cfg, addon="wt_addon", skip_import=False)
+    ids = {i.id for i in report.errors}
+    assert "addon_has_prior_output" not in ids
+    assert "addon_missing" not in ids
+
+
+def test_addon_missing_errors_by_default(tmp_path: Path) -> None:
+    """A nonexistent addon dir must error with addon_missing so the
+    user gets a clear remediation hint instead of the importer hanging."""
+    cfg = _baseline_cfg(tmp_path)
+    report = preflight.run_preflight(cfg, addon="unborn_addon", skip_import=False)
+    ids = {i.id for i in report.errors}
+    assert "addon_missing" in ids
+
+
+def test_addon_missing_silenced_by_create_addon_flag(tmp_path: Path) -> None:
+    """--create-addon (or --auto) tells preflight to expect the pipeline
+    to scaffold the dir later. Don't error here."""
+    cfg = _baseline_cfg(tmp_path)
+    report = preflight.run_preflight(
+        cfg, addon="unborn_addon", skip_import=False, create_addon=True
+    )
+    ids = {i.id for i in report.errors}
+    assert "addon_missing" not in ids
 
 
 def test_missing_addons_dir_is_error(tmp_path: Path) -> None:
@@ -306,3 +348,4 @@ def test_autofix_migrates_drift_state_to_new_workspace(tmp_path: Path) -> None:
     # data made it across
     moved = json.loads((override / DRIFT_STATE_FILENAME).read_text(encoding="utf-8"))
     assert "/some/cs2/import_map_community.py" in moved.get("entries", {})
+

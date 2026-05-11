@@ -7,7 +7,7 @@ import struct
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # bspprotect-style tools can break decompilers.
 # marker checks catch obvious failures early.
@@ -78,7 +78,7 @@ class BspInfo:
 
 
 # read a single lump header (offset, length) from a bsp byte buffer.
-def _read_lump_header(data: bytes, lump_id: int) -> Optional[tuple[int, int]]:
+def _read_lump_header(data: bytes, lump_id: int) -> tuple[int, int] | None:
     base = _LUMP_HEADER_OFFSET + lump_id * _LUMP_HEADER_SIZE
     if len(data) < base + _LUMP_HEADER_SIZE:
         return None

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from .. import __version__
 from .bsp import BspInfo
@@ -19,8 +19,8 @@ class Report:
     schema_version: int = REPORT_SCHEMA_VERSION
     tool_version: str = __version__
     inputs: Dict[str, str] = field(default_factory=dict)
-    vmf: Optional[Dict[str, object]] = None
-    bsp: Optional[Dict[str, object]] = None
+    vmf: Dict[str, object] | None = None
+    bsp: Dict[str, object] | None = None
     findings: List[Dict[str, object]] = field(default_factory=list)
     summary: Dict[str, int] = field(default_factory=dict)
 
@@ -28,9 +28,9 @@ class Report:
 # build a structured json-friendly dict from raw analyses. callers can pass
 # either, both, or neither.
 def build_report(
-    vmf: Optional[VmfAnalysis] = None,
-    bsp: Optional[BspInfo] = None,
-    inputs: Optional[Dict[str, str]] = None,
+    vmf: VmfAnalysis | None = None,
+    bsp: BspInfo | None = None,
+    inputs: Dict[str, str] | None = None,
 ) -> Dict[str, object]:
     findings: List[Dict[str, object]] = []
     if vmf is not None:

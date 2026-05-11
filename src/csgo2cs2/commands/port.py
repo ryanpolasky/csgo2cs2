@@ -104,6 +104,16 @@ def register(subparsers) -> None:
         ),
     )
     p.add_argument(
+        "--create-addon",
+        action="store_true",
+        help=(
+            "If the CS2 addon directory does not exist yet, scaffold it "
+            "(addoninfo.gi + empty maps/) before importing. Implied by --auto. "
+            "Workshop Tools is no longer required for porting -- only for "
+            "publishing to Steam Workshop later."
+        ),
+    )
+    p.add_argument(
         "--skip-preflight",
         action="store_true",
         help=(
@@ -135,6 +145,7 @@ def run(args: argparse.Namespace) -> int:
             restart=args.restart,
             overwrite=args.overwrite,
             skip_preflight=args.skip_preflight,
+            create_addon=args.create_addon,
         )
     except WindowsRequiredError as exc:
         if args.skip_import:
@@ -144,3 +155,4 @@ def run(args: argparse.Namespace) -> int:
         error(str(exc))
         info("Re-run with --skip-import to do download/decompile/analyze on this OS.")
         return 1
+

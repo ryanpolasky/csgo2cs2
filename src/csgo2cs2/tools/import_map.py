@@ -6,7 +6,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 
 from ..platform_check import require_windows
 
@@ -35,8 +35,8 @@ class ImportMapTool:
 
     def __init__(
         self,
-        importer_path: Optional[str] = None,
-        python_executable: Optional[str] = None,
+        importer_path: str | None = None,
+        python_executable: str | None = None,
     ) -> None:
         self.importer_path = importer_path
         # Default to the *same* Python that's running csgo2cs2. The previous
@@ -46,7 +46,7 @@ class ImportMapTool:
         # could do anything useful.
         self.python_executable = python_executable or sys.executable
 
-    def resolve(self) -> Optional[Path]:
+    def resolve(self) -> Path | None:
         if not self.importer_path:
             return None
         p = Path(self.importer_path)
@@ -60,7 +60,7 @@ class ImportMapTool:
         use_bsp: bool = True,
         no_merge_instances: bool = False,
         skip_deps: bool = False,
-        extra_args: Optional[Sequence[str]] = None,
+        extra_args: Sequence[str] | None = None,
     ) -> list[str]:
         importer = self.resolve()
         if not importer:
@@ -93,7 +93,7 @@ class ImportMapTool:
         use_bsp: bool = True,
         no_merge_instances: bool = False,
         skip_deps: bool = False,
-        extra_args: Optional[Sequence[str]] = None,
+        extra_args: Sequence[str] | None = None,
     ) -> subprocess.CompletedProcess:
         require_windows("import_map_community.py")
         cmd = self.build_command(

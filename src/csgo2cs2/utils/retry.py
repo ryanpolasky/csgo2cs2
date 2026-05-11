@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple, Type, TypeVar
+from typing import Callable, Tuple, Type, TypeVar
 
 T = TypeVar("T")
 
@@ -35,9 +35,9 @@ def _sleep_for_attempt(policy: RetryPolicy, attempt: int) -> float:
 
 def call_with_retry(
     fn: Callable[[], T],
-    policy: Optional[RetryPolicy] = None,
+    policy: RetryPolicy | None = None,
     *,
-    on_retry: Optional[Callable[[int, BaseException, float], None]] = None,
+    on_retry: Callable[[int, BaseException, float], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> T:
     """Run `fn()` with retries. Returns its result on first success.
@@ -45,7 +45,7 @@ def call_with_retry(
     Raises the last exception when all attempts are exhausted.
     """
     pol = policy or RetryPolicy()
-    last_exc: Optional[BaseException] = None
+    last_exc: BaseException | None = None
     for i in range(1, pol.attempts + 1):
         try:
             return fn()
@@ -66,8 +66,8 @@ def retry_until(
     fn: Callable[[], T],
     *,
     predicate: Callable[[T], bool],
-    policy: Optional[RetryPolicy] = None,
-    on_retry: Optional[Callable[[int, T, float], None]] = None,
+    policy: RetryPolicy | None = None,
+    on_retry: Callable[[int, T, float], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> T:
     """Run `fn()` repeatedly until `predicate(result)` is true.
@@ -77,7 +77,7 @@ def retry_until(
     indicates failure).
     """
     pol = policy or RetryPolicy()
-    last_result: Optional[T] = None
+    last_result: T | None = None
     for i in range(1, pol.attempts + 1):
         last_result = fn()
         if predicate(last_result):

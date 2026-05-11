@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 
 from . import __version__
 from .commands import about_cmd as cmd_about
+from .commands import addon_cmd as cmd_addon
 from .commands import analyze as cmd_analyze
 from .commands import bug_report_cmd as cmd_bug_report
 from .commands import cleanup as cmd_cleanup
@@ -59,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
     cmd_init.register(sub)
+    cmd_addon.register(sub)
     cmd_doctor.register(sub)
     cmd_tools.register(sub)
     cmd_download.register(sub)
@@ -81,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_log_workspace(config_path: Optional[str]) -> Path:
+def _resolve_log_workspace(config_path: str | None) -> Path:
     try:
         cfg = load_config(config_path)
         return Path(cfg.workspace_dir).expanduser()
@@ -92,7 +94,7 @@ def _resolve_log_workspace(config_path: Optional[str]) -> Path:
         return Path(DEFAULT_WORKSPACE_DIR).expanduser()
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     setup_logging(verbose=args.verbose)
@@ -123,3 +125,4 @@ def _dispatch(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

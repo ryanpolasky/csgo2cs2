@@ -6,7 +6,7 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -27,14 +27,14 @@ class WorkshopMeta:
     """workshop metadata snapshot recorded at port time. populated when
     `--export-images` or `--auto-addoninfo` triggers a steam api fetch."""
 
-    title: Optional[str] = None
-    description: Optional[str] = None
-    creator: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
+    creator: str | None = None
     tags: List[str] = field(default_factory=list)
-    preview_url: Optional[str] = None
-    time_created: Optional[int] = None
-    time_updated: Optional[int] = None
-    fetched_at: Optional[float] = None
+    preview_url: str | None = None
+    time_created: int | None = None
+    time_updated: int | None = None
+    fetched_at: float | None = None
 
 
 # Stage state values used by the port pipeline. Pipeline writes one of
@@ -61,12 +61,12 @@ PORT_STAGES: tuple[str, ...] = (
 class StageRecord:
     name: str
     status: str = STAGE_PENDING
-    started_at: Optional[float] = None
-    ended_at: Optional[float] = None
+    started_at: float | None = None
+    ended_at: float | None = None
     detail: str = ""  # free-form note: error message, file count, etc.
 
     @property
-    def elapsed(self) -> Optional[float]:
+    def elapsed(self) -> float | None:
         if self.started_at is None:
             return None
         end = self.ended_at if self.ended_at is not None else time.time()
@@ -80,7 +80,7 @@ class PortManifest:
     copied_files: List[CopiedFile] = field(default_factory=list)
     patched_files: List[str] = field(default_factory=list)
     renamed_files: List[RenamedFile] = field(default_factory=list)
-    workshop_meta: Optional[WorkshopMeta] = None
+    workshop_meta: WorkshopMeta | None = None
     stages: Dict[str, StageRecord] = field(default_factory=dict)
     last_args: Dict[str, Any] = field(default_factory=dict)
 
@@ -145,8 +145,8 @@ class PortManifest:
             data = json.load(f)
         copied = [CopiedFile(**c) for c in data.pop("copied_files", [])]
         renamed = [RenamedFile(**r) for r in data.pop("renamed_files", [])]
-        meta_raw: Optional[Dict[str, Any]] = data.pop("workshop_meta", None)
-        meta: Optional[WorkshopMeta] = None
+        meta_raw: Dict[str, Any] | None = data.pop("workshop_meta", None)
+        meta: WorkshopMeta | None = None
         if isinstance(meta_raw, dict):
             meta = WorkshopMeta(
                 title=meta_raw.get("title"),

@@ -24,7 +24,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 CSGO_FOLDER_NAME = "Counter-Strike Global Offensive"
 _STEAMCMD_FILENAMES = {
@@ -93,7 +93,7 @@ def _read_library_folders(steam_root: Path) -> List[Path]:
     return out
 
 
-def find_csgo_install() -> Optional[Path]:
+def find_csgo_install() -> Path | None:
     for root in _candidate_steam_roots():
         for lib in _read_library_folders(root):
             candidate = lib / "steamapps" / "common" / CSGO_FOLDER_NAME
@@ -102,7 +102,7 @@ def find_csgo_install() -> Optional[Path]:
     return None
 
 
-def find_steamcmd() -> Optional[Path]:
+def find_steamcmd() -> Path | None:
     # 1. PATH
     import shutil
 

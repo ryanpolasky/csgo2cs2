@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .config import Config
 from .logging_utils import info, success, warn
@@ -15,7 +14,7 @@ from .utils.paths import ensure_dir
 
 @dataclass
 class ExtractResult:
-    tool_used: Optional[str]
+    tool_used: str | None
     output_dir: Path
     succeeded: bool
     detail: str = ""

@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from .base import ToolAdapter, ToolNotFoundError
 
@@ -15,13 +14,13 @@ class BSPSource(ToolAdapter):
 
     def __init__(
         self,
-        executable: Optional[str] = None,
-        java_path: Optional[str] = None,
+        executable: str | None = None,
+        java_path: str | None = None,
     ) -> None:
         super().__init__(executable)
         self.java_path = java_path
 
-    def _resolve_java(self) -> Optional[str]:
+    def _resolve_java(self) -> str | None:
         if self.java_path and Path(self.java_path).exists():
             return self.java_path
         return shutil.which(self.java_path or "java")

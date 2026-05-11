@@ -23,7 +23,7 @@ import sys
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List
 
 from .. import __version__
 from ..config import Config, load_config
@@ -210,7 +210,7 @@ def _build_env_dump() -> str:
     return "\n".join(lines) + "\n"
 
 
-def _safe_doctor_json(cfg: Config, args: argparse.Namespace) -> Optional[bytes]:
+def _safe_doctor_json(cfg: Config, args: argparse.Namespace) -> bytes | None:
     """Invoke `doctor --json` in-process and capture its stdout."""
     try:
         from . import doctor as cmd_doctor

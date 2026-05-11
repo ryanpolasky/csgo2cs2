@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .downloader import DownloadError, fetch
 
@@ -28,14 +28,14 @@ _DEFAULT_PREVIEW_NAME = "preview"
 @dataclass
 class WorkshopMetadata:
     workshop_id: str
-    title: Optional[str] = None
-    description: Optional[str] = None
-    preview_url: Optional[str] = None
-    file_url: Optional[str] = None
-    creator: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
+    preview_url: str | None = None
+    file_url: str | None = None
+    creator: str | None = None
     tags: List[str] = field(default_factory=list)
-    time_created: Optional[int] = None
-    time_updated: Optional[int] = None
+    time_created: int | None = None
+    time_updated: int | None = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> Dict[str, Any]:
@@ -100,7 +100,7 @@ def fetch_metadata(
     workshop_id: str,
     timeout: float = 15.0,
     *,
-    _opener: Optional[Any] = None,
+    _opener: Any | None = None,
 ) -> WorkshopMetadata:
     body = urllib.parse.urlencode(
         {

@@ -6,7 +6,7 @@ import subprocess
 import time
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from .base import ToolAdapter
 
@@ -17,13 +17,13 @@ class SteamCMD(ToolAdapter):
     name = "steamcmd"
 
     # return the folder containing the steamcmd executable.
-    def steamcmd_root(self) -> Optional[Path]:
+    def steamcmd_root(self) -> Path | None:
         resolved = self.resolve()
         if not resolved:
             return None
         return Path(resolved).parent
 
-    def expected_workshop_path(self, workshop_id: str, app_id: str = CSGO_APP_ID) -> Optional[Path]:
+    def expected_workshop_path(self, workshop_id: str, app_id: str = CSGO_APP_ID) -> Path | None:
         root = self.steamcmd_root()
         if not root:
             return None
@@ -35,7 +35,7 @@ class SteamCMD(ToolAdapter):
         self,
         workshop_id: str,
         app_id: str = CSGO_APP_ID,
-        login: Optional[str] = None,
+        login: str | None = None,
         retries: int = 3,
         backoff_seconds: float = 5.0,
     ) -> subprocess.CompletedProcess:
@@ -49,7 +49,7 @@ class SteamCMD(ToolAdapter):
             "+quit",
         ]
         attempts = max(1, retries)
-        last: Optional[subprocess.CompletedProcess] = None
+        last: subprocess.CompletedProcess | None = None
         expected = self.expected_workshop_path(workshop_id, app_id)
         for i in range(attempts):
             last = self.run(args, check=False)
@@ -120,7 +120,7 @@ def resolve_downloaded_bsp(
     steam: SteamCMD,
     workshop_id: str,
     scratch_root: Path,
-) -> Optional[Path]:
+) -> Path | None:
     """Find the .bsp SteamCMD dropped on disk, unwrapping the legacy
     ZIP wrapper if needed. Returns None when no plausible payload is
     present at any candidate path."""

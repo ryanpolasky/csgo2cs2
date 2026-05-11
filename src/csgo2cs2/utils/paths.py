@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List
 
 
 def ensure_dir(path: Path) -> Path:
@@ -12,7 +12,7 @@ def ensure_dir(path: Path) -> Path:
 
 
 # return the first matching file under root.
-def find_first(root: Path, patterns: Iterable[str]) -> Optional[Path]:
+def find_first(root: Path, patterns: Iterable[str]) -> Path | None:
     for pattern in patterns:
         for path in root.rglob(pattern):
             if path.is_file():

@@ -18,7 +18,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 DRIFT_STATE_FILENAME = ".csgo2cs2_drift.json"
 
@@ -93,7 +93,7 @@ def save_state(state: DriftState, workspace_dir: Path) -> Path:
     return p
 
 
-def hash_file(path: Path) -> Optional[str]:
+def hash_file(path: Path) -> str | None:
     if not path.exists() or not path.is_file():
         return None
     h = hashlib.sha256()

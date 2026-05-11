@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from csgo2cs2.commands.doctor import _run_unfix
 from csgo2cs2.utils.backup import backup_path_for
@@ -17,9 +16,9 @@ from csgo2cs2.utils.backup import backup_path_for
 
 @dataclass
 class FakeCfg:
-    csgo_install_path: Optional[str]
-    cs2_bin_path: Optional[str]
-    import_script_path: Optional[str] = None
+    csgo_install_path: str | None
+    cs2_bin_path: str | None
+    import_script_path: str | None = None
 
 
 def _make_install(tmp_path: Path) -> tuple[Path, Path, Path, Path]:

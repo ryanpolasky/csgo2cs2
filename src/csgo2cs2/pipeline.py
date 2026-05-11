@@ -6,7 +6,6 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
 
 from . import fixers  # noqa: F401  (registers fixers on import)
 from .analyzers.bsp import inspect_bsp
@@ -72,23 +71,28 @@ def _record_subprocess(tool: str, argv: list, returncode: int, stdout: str, stde
 
 
 def run_port_pipeline(
-    url_or_id: Optional[str],
+    url_or_id: str | None,
     addon: str,
     auto: bool = False,
     skip_import: bool = False,
-    config_path: Optional[str] = None,
-    local_bsp: Optional[Path] = None,
+    config_path: str | None = None,
+    local_bsp: Path | None = None,
     use_bsp: bool = True,
     no_merge_instances: bool = False,
     skip_deps: bool = False,
     dry_run: bool = False,
-    export_images: Optional[str] = None,
+    export_images: str | None = None,
     auto_addoninfo: bool = False,
     resume: bool = True,
     restart: bool = False,
     overwrite: bool = False,
     skip_preflight: bool = False,
+    create_addon: bool = False,
 ) -> int:
+    # --auto implies --create-addon: the whole point of --auto is
+    # "don't stop to ask me about fixable preconditions."
+    if auto:
+        create_addon = True
     cfg = load_config(config_path)
 
     # local-file mode skips the workshop download and uses a synthetic id
@@ -154,6 +158,7 @@ def run_port_pipeline(
                 addon=addon,
                 skip_import=skip_import or bool(local_bsp),
                 overwrite=overwrite,
+                create_addon=create_addon,
             )
             if not report.errors:
                 break
@@ -392,7 +397,7 @@ def _print_stage_summary(manifest: PortManifest) -> None:
         print(f"  {name:<10}  {status:<8}  {dur:>7}")
 
 
-def _resolve_existing_bsp(cfg: Config, workshop_id: str) -> Optional[Path]:
+def _resolve_existing_bsp(cfg: Config, workshop_id: str) -> Path | None:
     cmd = SteamCMD(cfg.steamcmd_path)
     scratch = Path(cfg.workspace_dir).expanduser() / workshop_id
     return resolve_downloaded_bsp(cmd, workshop_id, scratch)
@@ -429,7 +434,7 @@ def _write_workshop_images(meta, out_dir: str) -> None:
 # pulling values from the workshop metadata. preview is sourced from
 # the export-images dir if it's already on disk; otherwise we re-fetch
 # it into a tempfile-style location under the workspace dir.
-def _populate_addoninfo(cfg: Config, addon: str, meta, export_images_dir: Optional[str]) -> None:
+def _populate_addoninfo(cfg: Config, addon: str, meta, export_images_dir: str | None) -> None:
     from .commands.launch_cmd import resolve_addon_dir
     from .utils.addoninfo import copy_thumbnail, write_addoninfo
 
@@ -476,7 +481,7 @@ def _populate_addoninfo(cfg: Config, addon: str, meta, export_images_dir: Option
             pass
 
 
-def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
+def _download(cfg: Config, workshop_id: str) -> Path | None:
     cmd = SteamCMD(cfg.steamcmd_path)
     if not cmd.resolve():
         error("SteamCMD is not configured. Set `steamcmd_path` in config.")
@@ -545,7 +550,7 @@ def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
     return bsp
 
 
-def _decompile(cfg: Config, bsp: Path, output_dir: Path) -> Optional[Path]:
+def _decompile(cfg: Config, bsp: Path, output_dir: Path) -> Path | None:
     bs = BSPSource(cfg.bspsource_path, java_path=cfg.java_path)
     if not bs.resolve():
         error("BSPSource is not configured. Set `bspsource_path` in config.")
@@ -634,7 +639,7 @@ def _analyze_and_fix(
     return fixed
 
 
-def _resolve_importer_path(cfg: Config) -> Optional[str]:
+def _resolve_importer_path(cfg: Config) -> str | None:
     # 1. user-provided override
     if cfg.import_script_path:
         p = Path(cfg.import_script_path)
@@ -813,6 +818,21 @@ def _derive_mapname(bsp: Path) -> str:
     return sanitized
 
 
+def _ensure_addon_scaffold(cfg: Config, addon: str) -> None:
+    """Idempotent: scaffold the addon dir iff it's missing. If it exists
+    (whether from Workshop Tools, a previous port, or our scaffold), do
+    nothing -- the importer will use whatever's there."""
+    from .tools.addon_scaffold import addon_dir
+    from .tools.addon_scaffold import create as scaffold_create
+
+    target = addon_dir(cfg, addon)
+    if target is None or target.exists():
+        return
+    info(f"Scaffolding addon dir at {target}...")
+    scaffold_create(cfg, addon)
+    success(f"Created {target} (addoninfo.gi + maps/).")
+
+
 def _stage_and_import(
     cfg: Config,
     vmf: Path,
@@ -870,6 +890,13 @@ def _stage_and_import(
     if renamed:
         info(f"Renamed `csgo/` -> `csgo_legacy/` under {renamed} staged content bucket(s).")
 
+    # Make sure the target addon dir exists. Valve's importer hangs
+    # silently if the dir is missing -- creating an empty WT-style
+    # scaffold (addoninfo.gi + maps/) is enough to satisfy it. Safe to
+    # call whether or not the dir already exists; scaffold does nothing
+    # when the dir has content.
+    _ensure_addon_scaffold(cfg, addon)
+
     inputs = ImportInputs(
         s1_gameinfo_dir=s1_gameinfo_dir,
         s1_content_dir=s1_content_dir,
@@ -903,3 +930,4 @@ def _stage_and_import(
 
     success("Import completed. Open the addon in CS2 Workshop Tools to compile.")
     return 0
+

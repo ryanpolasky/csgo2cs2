@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Pattern
+from typing import Iterable, List, Pattern
 
 
 @dataclass(frozen=True)
@@ -233,7 +233,7 @@ _register(
 # ----- Lookup --------------------------------------------------------------
 
 
-def match_error(text: str) -> Optional[KnownError]:
+def match_error(text: str) -> KnownError | None:
     """Return the first registered KnownError whose pattern matches."""
     if not text:
         return None

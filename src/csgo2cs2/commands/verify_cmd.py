@@ -15,7 +15,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from ..config import Config, load_config
 from ..logging_utils import error, info, success, warn
@@ -66,7 +66,7 @@ def register(subparsers) -> None:
     p.set_defaults(func=run)
 
 
-def _resolve_addon_dir(cfg: Config, addon: str) -> Optional[Path]:
+def _resolve_addon_dir(cfg: Config, addon: str) -> Path | None:
     # share the path-resolution logic with launch_cmd by importing.
     # avoids drift between the two commands.
     from .launch_cmd import resolve_addon_dir
@@ -75,8 +75,8 @@ def _resolve_addon_dir(cfg: Config, addon: str) -> Optional[Path]:
 
 
 def _check_vmap(
-    addon_dir: Path, mapname: Optional[str]
-) -> tuple[Optional[Path], List[VerifyIssue]]:
+    addon_dir: Path, mapname: str | None
+) -> tuple[Path | None, List[VerifyIssue]]:
     issues: List[VerifyIssue] = []
     maps_dir = addon_dir / "maps"
     if not maps_dir.is_dir():
@@ -168,7 +168,7 @@ def _check_assets(addon_dir: Path, vmap: Path) -> List[VerifyIssue]:
     return issues
 
 
-def verify_addon(cfg: Config, addon: str, mapname: Optional[str] = None) -> VerifyReport:
+def verify_addon(cfg: Config, addon: str, mapname: str | None = None) -> VerifyReport:
     issues: List[VerifyIssue] = []
     addon_dir = _resolve_addon_dir(cfg, addon)
     if addon_dir is None or not addon_dir.is_dir():

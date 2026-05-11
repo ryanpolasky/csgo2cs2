@@ -11,7 +11,7 @@ import argparse
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from ..config import Config, load_config
 from ..logging_utils import error, info, success, warn
@@ -47,7 +47,7 @@ def register(subparsers) -> None:
 # explicit `cs2_addons_path` if set, otherwise deriving it from the
 # canonical install layout under `cs2_bin_path` (which is what most
 # users have configured via `csgo2cs2 init`).
-def resolve_addon_dir(cfg: Config, addon: str) -> Optional[Path]:
+def resolve_addon_dir(cfg: Config, addon: str) -> Path | None:
     if cfg.cs2_addons_path:
         return Path(cfg.cs2_addons_path).expanduser() / addon
     if cfg.cs2_bin_path:
@@ -60,7 +60,7 @@ def resolve_addon_dir(cfg: Config, addon: str) -> Optional[Path]:
     return None
 
 
-def resolve_cs2_executable(cfg: Config) -> Optional[Path]:
+def resolve_cs2_executable(cfg: Config) -> Path | None:
     if not cfg.cs2_bin_path:
         return None
     bin_dir = Path(cfg.cs2_bin_path).expanduser()
@@ -77,7 +77,7 @@ def resolve_cs2_executable(cfg: Config) -> Optional[Path]:
 # user's addon has multiple .vmaps we still pick the first deterministic
 # one and surface the alternatives via a warn, so they know to use
 # `--map <name>` if it's wrong.
-def autodetect_mapname(addon_dir: Path) -> Tuple[Optional[str], List[str]]:
+def autodetect_mapname(addon_dir: Path) -> Tuple[str | None, List[str]]:
     maps_dir = addon_dir / "maps"
     if not maps_dir.is_dir():
         return None, []
@@ -87,7 +87,7 @@ def autodetect_mapname(addon_dir: Path) -> Tuple[Optional[str], List[str]]:
     return vmaps[0], vmaps
 
 
-def build_cmdline(exe: Path, addon: str, mapname: Optional[str], hammer: bool) -> List[str]:
+def build_cmdline(exe: Path, addon: str, mapname: str | None, hammer: bool) -> List[str]:
     cmd: List[str] = [str(exe)]
     if hammer:
         # workshop tools mode opens hammer; +map is ignored. cs2 ships

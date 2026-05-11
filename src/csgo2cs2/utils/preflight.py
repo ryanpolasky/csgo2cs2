@@ -16,7 +16,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from ..config import Config
 from ..platform_check import is_windows
@@ -65,14 +65,14 @@ def _safe_dir_writable(path: Path) -> bool:
     return True
 
 
-def _free_bytes(path: Path) -> Optional[int]:
+def _free_bytes(path: Path) -> int | None:
     try:
         return shutil.disk_usage(str(path)).free
     except OSError:
         return None
 
 
-def _existing_addon(cs2_addons_path: Optional[str], addon: str) -> Optional[Path]:
+def _existing_addon(cs2_addons_path: str | None, addon: str) -> Path | None:
     if not cs2_addons_path:
         return None
     p = Path(cs2_addons_path).expanduser() / addon
@@ -214,6 +214,7 @@ def _check_addon_dir(
     *,
     overwrite: bool,
     skip_import: bool,
+    create_addon: bool = False,
 ) -> None:
     if skip_import:
         return
@@ -251,13 +252,43 @@ def _check_addon_dir(
             )
         )
         return
-    existing = _existing_addon(cfg.cs2_addons_path, addon)
-    if existing is not None and not overwrite:
+    from ..tools.addon_scaffold import inspect as inspect_addon
+
+    state = inspect_addon(cfg, addon)
+    if state is None:
+        return
+    if not state.exists:
+        if create_addon:
+            # caller has opted in to having us scaffold the dir; preflight
+            # passes and pipeline will handle creation.
+            return
         report.issues.append(
             PreflightIssue(
-                id="addon_already_exists",
+                id="addon_missing",
                 severity="error",
-                message=f"Addon {addon!r} already exists at {existing}.",
+                message=(
+                    f"Addon {addon!r} has not been created at {state.path}."
+                ),
+                hint=(
+                    f"Run `csgo2cs2 addon create {addon}` to scaffold it, or "
+                    "re-run the port with --create-addon (also implied by --auto). "
+                    "Workshop Tools is no longer required for porting."
+                ),
+            )
+        )
+        return
+    # Empty / freshly-scaffolded dir: NOT an error. Workshop Tools and
+    # our own `addon create` produce a dir with addoninfo.gi + empty
+    # maps/; the importer is happy to write into that.
+    if state.has_prior_port_output and not overwrite:
+        report.issues.append(
+            PreflightIssue(
+                id="addon_has_prior_output",
+                severity="error",
+                message=(
+                    f"Addon {addon!r} at {state.path} already has prior port "
+                    f"output ({state.map_count} file(s) under maps/)."
+                ),
                 hint=(
                     "Pick a different --addon, manually delete the directory, or "
                     "re-run with --overwrite to allow the importer to merge into it."
@@ -354,13 +385,21 @@ def run_preflight(
     addon: str,
     skip_import: bool = False,
     overwrite: bool = False,
+    create_addon: bool = False,
 ) -> PreflightReport:
     """Run every preflight check. Returns a report; caller decides what to do."""
     report = PreflightReport()
     _check_addon_name(report, addon)
     _check_tools(report, cfg, skip_import=skip_import)
     _check_install_paths(report, cfg, skip_import=skip_import)
-    _check_addon_dir(report, cfg, addon, overwrite=overwrite, skip_import=skip_import)
+    _check_addon_dir(
+        report,
+        cfg,
+        addon,
+        overwrite=overwrite,
+        skip_import=skip_import,
+        create_addon=create_addon,
+    )
     _check_workspace(report, cfg)
     _check_disk_space(report, cfg)
     _check_install_patches(report, cfg, skip_import=skip_import)
@@ -406,7 +445,7 @@ _AUTOFIXABLE_IDS = frozenset({"workspace_has_space", "workspace_not_writable"})
 
 def try_autofix_interactive(
     cfg: Config,
-    config_path: Optional[str],
+    config_path: str | None,
     report: PreflightReport,
     *,
     prompt_fn=input,
@@ -490,3 +529,5 @@ def _migrate_drift_state(old_workspace: Path, new_workspace: Path, print_fn) -> 
         # non-fatal -- worst case the user sees the install_patches_not_applied
         # warning and re-runs `csgo2cs2 doctor --fix`.
         print_fn(f"note: could not migrate drift state ({exc}); continuing.")
+
+

@@ -9,7 +9,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 
 class DownloadError(RuntimeError):
@@ -31,9 +31,9 @@ def _progress_default(name: str, downloaded: int, total: int) -> None:
 def fetch(
     url: str,
     dest: Path,
-    sha256: Optional[str] = None,
-    name: Optional[str] = None,
-    progress: Optional[Callable[[str, int, int], None]] = _progress_default,
+    sha256: str | None = None,
+    name: str | None = None,
+    progress: Callable[[str, int, int], None] | None = _progress_default,
     timeout: float = 60.0,
 ) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)

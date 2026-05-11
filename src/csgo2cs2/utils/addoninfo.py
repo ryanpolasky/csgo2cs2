@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Optional
 
 from .workshop_meta import WorkshopMetadata
 
@@ -34,7 +33,7 @@ DEFAULT_FILENAME = "addoninfo.json"
 THUMBNAIL_FILENAMES = ("addonimage.jpg", "addonimage.png")
 
 
-def _existing_addoninfo(addon_dir: Path) -> Optional[Path]:
+def _existing_addoninfo(addon_dir: Path) -> Path | None:
     for name in ("addoninfo.gi", "addoninfo.json", "addoninfo.txt"):
         p = addon_dir / name
         if p.exists():
@@ -78,7 +77,7 @@ def write_addoninfo(
     addon_dir: Path,
     *,
     force: bool = False,
-) -> Optional[Path]:
+) -> Path | None:
     addon_dir = addon_dir.expanduser()
     addon_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,11 +104,11 @@ def write_addoninfo(
 # copy the workshop preview into addonimage.jpg/.png at addon root.
 # returns the path written, or None if no preview was downloaded.
 def copy_thumbnail(
-    preview_path: Optional[Path],
+    preview_path: Path | None,
     addon_dir: Path,
     *,
     force: bool = False,
-) -> Optional[Path]:
+) -> Path | None:
     if preview_path is None:
         return None
     if not preview_path.exists():

@@ -6,14 +6,14 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 
 
 @dataclass
 class ToolStatus:
     name: str
     installed: bool
-    path: Optional[str]
+    path: str | None
     detail: str = ""
 
 
@@ -24,10 +24,10 @@ class ToolNotFoundError(RuntimeError):
 class ToolAdapter:
     name: str = "tool"
 
-    def __init__(self, executable: Optional[str] = None) -> None:
+    def __init__(self, executable: str | None = None) -> None:
         self.executable = executable
 
-    def resolve(self) -> Optional[str]:
+    def resolve(self) -> str | None:
         if self.executable:
             p = Path(self.executable)
             if p.exists():
@@ -53,7 +53,7 @@ class ToolAdapter:
     def run(
         self,
         args: Sequence[str],
-        cwd: Optional[Path] = None,
+        cwd: Path | None = None,
         check: bool = True,
         capture_output: bool = True,
     ) -> subprocess.CompletedProcess:
