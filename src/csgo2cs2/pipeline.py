@@ -853,33 +853,108 @@ def _content_addon_maps_dir(cfg: Config, addon: str) -> Path | None:
     return Path(*parts) / addon / "maps"
 
 
-def _ensure_prefab_refs_stub(cfg: Config, addon: str, mapname: str) -> None:
-    """Pre-create the post-import files Keller's wrapper reads
-    unconditionally. source1import only writes
-    `<map>_prefab_refs.txt` for maps that use prefabs -- for ones that
-    don't (e.g. recoil_master), the script crashes with FileNotFoundError
-    *after* a successful s1->s2 conversion. An empty stub is a well-formed
-    no-op for the post-processing chain.
+# Subdirectories under staged/ that hold asset sources convertible by
+# source1import. .vmt -> .vmat (materials), .mdl -> .vmdl (models). Other
+# pakfile dirs (sound, particles, ...) ship loose at runtime and don't
+# need a per-asset conversion pass, so we skip them.
+_REFS_ASSET_EXTS: tuple[tuple[str, str], ...] = (
+    ("materials", ".vmt"),
+    ("models", ".mdl"),
+)
 
-    Idempotent: never overwrites an existing non-empty file; source1import
-    will replace empty stubs with its real output when applicable."""
+
+def _collect_staged_refs(staged_root: Path) -> list[str]:
+    """Return forward-slash relative paths to every convertible asset
+    under `staged_root` -- materials (.vmt) and models (.mdl). Sorted
+    for deterministic output. Used to drive Keller's per-asset s1->s2
+    conversion phase via the refs file format."""
+    refs: list[str] = []
+    for subdir, ext in _REFS_ASSET_EXTS:
+        d = staged_root / subdir
+        if not d.is_dir():
+            continue
+        for p in sorted(d.rglob(f"*{ext}")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(staged_root).as_posix()
+            refs.append(rel)
+    return refs
+
+
+def _format_refs_kv(refs: list[str]) -> str:
+    """Serialise refs in the `importfilelist { "file" "..." }` KV format
+    Keller's `ListStringFromRefs` expects. Always emits a syntactically
+    valid file (an empty refs list -> empty KV block)."""
+    body = ["importfilelist", "{"]
+    for r in refs:
+        body.append(f'\t"file" "{r}"')
+    body.append("}")
+    return "\n".join(body) + "\n"
+
+
+def _write_prefab_refs_from_staged(
+    cfg: Config,
+    addon: str,
+    mapname: str,
+    staged_root: Optional[Path] = None,
+) -> int:
+    """Generate the `<map>_prefab_refs.txt` Keller's import wrapper reads
+    after the initial source1import pass. The wrapper walks this file to
+    drive per-asset s1->s2 conversion (`source1import -usefilelist`) and
+    s2 compilation (`resourcecompiler -filelist`).
+
+    source1import only writes this file when the source map uses prefabs,
+    so for non-prefab maps with custom textures (e.g. recoil_master) the
+    per-asset conversion never runs and the map ships without .vmat_c for
+    any of its workshop materials -- every face renders as a missing
+    checkerboard at runtime.
+
+    We side-step that by pre-building a refs list from the staged content
+    (extracted from the .bsp pakfile + companion folders). The wrapper
+    then converts every .vmt to .vmat and compiles every .vmat to .vmat_c
+    so the final map renders.
+
+    Returns the number of refs written. An empty refs list still produces
+    a well-formed empty KV stub for the no-prefab + no-pakfile-content
+    case (matches the prior `_ensure_prefab_refs_stub` behaviour).
+
+    Idempotent: when an existing file has non-zero size *and* a populated
+    `importfilelist` block (i.e. source1import already wrote real refs),
+    we don't overwrite it."""
     maps_dir = _content_addon_maps_dir(cfg, addon)
     if maps_dir is None:
-        return
+        return 0
     try:
         maps_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         # filesystem layout may not be writable yet (steam tools not
         # installed); the importer would surface its own error in that
         # case, so don't fail the pipeline here.
-        return
-    stub = maps_dir / f"{mapname}_prefab_refs.txt"
-    if stub.exists() and stub.stat().st_size > 0:
-        return
+        return 0
+    out = maps_dir / f"{mapname}_prefab_refs.txt"
+    if out.exists() and out.stat().st_size > 0:
+        # If source1import already wrote populated refs, don't clobber.
+        try:
+            existing = out.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            existing = ""
+        if '"file"' in existing:
+            return 0
+    refs: list[str] = []
+    if staged_root is not None and staged_root.is_dir():
+        refs = _collect_staged_refs(staged_root)
     try:
-        stub.touch(exist_ok=True)
+        out.write_text(_format_refs_kv(refs), encoding="utf-8")
     except OSError:
-        return
+        return 0
+    return len(refs)
+
+
+def _ensure_prefab_refs_stub(cfg: Config, addon: str, mapname: str) -> None:
+    """Back-compat wrapper around `_write_prefab_refs_from_staged` for
+    callers that don't have a staged root handy (tests, dry-runs).
+    Writes an empty KV stub."""
+    _write_prefab_refs_from_staged(cfg, addon, mapname, staged_root=None)
 
 
 def _stage_and_import(
@@ -954,14 +1029,20 @@ def _stage_and_import(
         mapname=mapname,
     )
 
-    # Pre-create the file Keller's wrapper script reads unconditionally
-    # after import. source1import only writes `<map>_prefab_refs.txt`
-    # when the map uses prefabs; for maps without (e.g. recoil_master)
-    # the file never exists and StripMDLsFromRefs crashes with
-    # FileNotFoundError after a *successful* import. An empty file is a
-    # well-formed no-op: SplitMdlFromRefs yields zero models / zero refs
-    # and the rest of the post-processing chain handles empties cleanly.
-    _ensure_prefab_refs_stub(cfg, addon, mapname)
+    # Pre-build the refs file Keller's wrapper reads after the initial
+    # source1import pass. source1import only writes `<map>_prefab_refs.txt`
+    # for maps with prefabs; for non-prefab maps the file never appears
+    # and (a) the wrapper crashes with FileNotFoundError, OR (b) we ship
+    # a stub but the per-asset conversion phase no-ops -- yielding a map
+    # whose textures all render as missing checkerboards in CS2.
+    # Populating it from staged/ drives the real .vmt->.vmat->.vmat_c
+    # conversion + .mdl->.vmdl->.vmdl_c conversion the map needs.
+    n_refs = _write_prefab_refs_from_staged(cfg, addon, mapname, s1_content_dir)
+    if n_refs:
+        info(
+            f"Wrote {n_refs} staged ref(s) to {mapname}_prefab_refs.txt "
+            "for per-asset s1->s2 conversion."
+        )
 
     info(f"Invoking import_map_community.py for `{addon}` / map `{mapname}`...")
     # Stream importer output so the user sees what resourcecompiler is
