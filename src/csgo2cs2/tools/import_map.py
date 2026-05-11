@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import IO, Callable, Sequence
 
 from ..platform_check import require_windows
 
@@ -94,7 +97,20 @@ class ImportMapTool:
         no_merge_instances: bool = False,
         skip_deps: bool = False,
         extra_args: Sequence[str] | None = None,
+        stream: bool = False,
+        on_line: Callable[[str, str], None] | None = None,
+        extra_path_dirs: Sequence[Path] | None = None,
     ) -> subprocess.CompletedProcess:
+        """Invoke the importer. When `stream=True`, stdout/stderr are
+        relayed to `on_line(stream_name, line)` as they arrive (default
+        callback prints to sys.stdout). Otherwise output is buffered and
+        returned only on completion.
+
+        `extra_path_dirs` is prepended to the subprocess PATH. Use this
+        to make sure resourcecompiler.exe (which Valve's script invokes
+        unqualified) is on PATH even if the user hasn't added cs2_bin_path
+        to their system PATH.
+        """
         require_windows("import_map_community.py")
         cmd = self.build_command(
             inputs,
@@ -103,4 +119,134 @@ class ImportMapTool:
             skip_deps=skip_deps,
             extra_args=extra_args,
         )
-        return subprocess.run(cmd, check=False, capture_output=True, text=True)
+        env = _env_with_extra_path(extra_path_dirs)
+        if not stream:
+            return subprocess.run(
+                cmd, check=False, capture_output=True, text=True, env=env
+            )
+        return _run_streaming(cmd, on_line=on_line, env=env)
+
+
+def _env_with_extra_path(
+    extra_path_dirs: Sequence[Path] | None,
+) -> dict[str, str] | None:
+    if not extra_path_dirs:
+        return None
+    env = os.environ.copy()
+    extra = os.pathsep.join(str(p) for p in extra_path_dirs if p)
+    if not extra:
+        return env
+    env["PATH"] = extra + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _run_streaming(
+    cmd: Sequence[str],
+    on_line: Callable[[str, str], None] | None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Spawn a subprocess and relay each line of stdout/stderr to
+    `on_line(stream, line)` as it arrives, while also capturing the
+    full output into the returned CompletedProcess. This is what makes
+    a long-running importer feel like it's actually doing something
+    -- without it the user stares at a blank line for 3 minutes."""
+    if on_line is None:
+        def _default_on_line(stream: str, line: str) -> None:
+            # write to stdout regardless of stream so order is preserved.
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+        on_line = _default_on_line
+
+    proc = subprocess.Popen(
+        list(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,  # line-buffered
+        env=env,
+    )
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def _reader(stream: IO[str], name: str, sink: list[str]) -> None:
+        for line in iter(stream.readline, ""):
+            sink.append(line)
+            try:
+                on_line(name, line)
+            except Exception:  # noqa: BLE001 -- never let a callback kill the subprocess
+                pass
+        stream.close()
+
+    assert proc.stdout is not None and proc.stderr is not None
+    t_out = threading.Thread(
+        target=_reader, args=(proc.stdout, "stdout", stdout_chunks), daemon=True
+    )
+    t_err = threading.Thread(
+        target=_reader, args=(proc.stderr, "stderr", stderr_chunks), daemon=True
+    )
+    t_out.start()
+    t_err.start()
+    returncode = proc.wait()
+    t_out.join()
+    t_err.join()
+    return subprocess.CompletedProcess(
+        args=list(cmd),
+        returncode=returncode,
+        stdout="".join(stdout_chunks),
+        stderr="".join(stderr_chunks),
+    )
+
+
+class HeartbeatPrinter:
+    """Print a 'still running' heartbeat to stdout when the subprocess
+    has been silent for a while. Useful for resourcecompiler.exe, which
+    can spend minutes inside a single asset with no output. Threaded so
+    it doesn't interfere with the subprocess readers."""
+
+    def __init__(self, interval: float = 5.0, label: str = "importer") -> None:
+        self.interval = interval
+        self.label = label
+        self._last_line_at = time.monotonic()
+        self._start = time.monotonic()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    def saw_line(self) -> None:
+        with self._lock:
+            self._last_line_at = time.monotonic()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._tick, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval + 1)
+
+    def _tick(self) -> None:
+        while not self._stop.wait(self.interval):
+            with self._lock:
+                idle = time.monotonic() - self._last_line_at
+                elapsed = time.monotonic() - self._start
+            if idle >= self.interval:
+                sys.stdout.write(
+                    f"[{self.label}] still running ({_fmt_elapsed(elapsed)} elapsed, "
+                    f"{_fmt_elapsed(idle)} since last output)...\n"
+                )
+                sys.stdout.flush()
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+

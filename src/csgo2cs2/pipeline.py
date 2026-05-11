@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from .fixers.base import apply_all
 from .logging_utils import error, header, info, success, warn
 from .platform_check import require_windows
 from .tools.bspsource import BSPSource
-from .tools.import_map import ImportInputs, ImportMapTool
+from .tools.import_map import HeartbeatPrinter, ImportInputs, ImportMapTool
 from .tools.steamcmd import CSGO_APP_ID, SteamCMD, resolve_downloaded_bsp
 from .utils.known_errors import match_error
 from .utils.manifest import (
@@ -906,12 +907,38 @@ def _stage_and_import(
     )
 
     info(f"Invoking import_map_community.py for `{addon}` / map `{mapname}`...")
-    result = importer.import_map(
-        inputs,
-        use_bsp=use_bsp,
-        no_merge_instances=no_merge_instances,
-        skip_deps=skip_deps,
-    )
+    # Stream importer output so the user sees what resourcecompiler is
+    # doing instead of staring at a blank line. The heartbeat fires every
+    # ~5s if the subprocess goes quiet, so silent hangs are obvious.
+    heartbeat = HeartbeatPrinter(interval=5.0, label="import")
+
+    def _on_line(stream: str, line: str) -> None:
+        heartbeat.saw_line()
+        sys.stdout.write(line if line.endswith("\n") else line + "\n")
+        sys.stdout.flush()
+
+    # Valve's importer shells out to `resourcecompiler.exe` without a
+    # full path, so it relies on PATH. The cs2 bin dir is rarely on the
+    # user's PATH by default -- ensure it's there for the subprocess.
+    extra_path_dirs: list[Path] = []
+    if cfg.cs2_bin_path:
+        bin_dir = Path(cfg.cs2_bin_path).expanduser()
+        if bin_dir.exists():
+            extra_path_dirs.append(bin_dir)
+
+    heartbeat.start()
+    try:
+        result = importer.import_map(
+            inputs,
+            use_bsp=use_bsp,
+            no_merge_instances=no_merge_instances,
+            skip_deps=skip_deps,
+            stream=True,
+            on_line=_on_line,
+            extra_path_dirs=extra_path_dirs,
+        )
+    finally:
+        heartbeat.stop()
     _record_subprocess(
         "import_map_community",
         [addon, mapname],
@@ -921,10 +948,8 @@ def _stage_and_import(
     )
     if result.returncode != 0:
         warn(f"Importer exited with code {result.returncode}")
-        if result.stdout:
-            print(result.stdout)
-        if result.stderr:
-            print(result.stderr)
+        # stdout/stderr were already streamed in real time; no need to
+        # re-print them.
         _surface_known_error((result.stdout or "") + "\n" + (result.stderr or ""))
         return 1
 

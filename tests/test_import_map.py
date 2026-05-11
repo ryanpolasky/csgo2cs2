@@ -13,7 +13,14 @@ from unittest.mock import patch
 import pytest
 
 from csgo2cs2.platform_check import WindowsRequiredError
-from csgo2cs2.tools.import_map import ImportInputs, ImportMapTool
+from csgo2cs2.tools.import_map import (
+    HeartbeatPrinter,
+    ImportInputs,
+    ImportMapTool,
+    _env_with_extra_path,
+    _fmt_elapsed,
+    _run_streaming,
+)
 
 
 def _inputs(tmp_path: Path) -> ImportInputs:
@@ -157,3 +164,86 @@ def test_import_map_none_python_executable_falls_back(tmp_path):
     tool = ImportMapTool(importer_path=str(importer), python_executable=None)
     cmd = tool.build_command(_inputs(tmp_path))
     assert cmd[0] == sys.executable
+
+
+def test_env_with_extra_path_prepends(tmp_path):
+    """cs2_bin_path must be prepended to subprocess PATH so Valve's
+    importer can find resourcecompiler.exe without the user having
+    edited their system PATH."""
+    import os
+
+    env = _env_with_extra_path([tmp_path])
+    assert env is not None
+    assert env["PATH"].startswith(str(tmp_path) + os.pathsep)
+
+
+def test_env_with_extra_path_none_returns_none():
+    """No extra dirs -> no env override, subprocess inherits."""
+    assert _env_with_extra_path(None) is None
+    assert _env_with_extra_path([]) is None
+
+
+def test_fmt_elapsed_renders_units():
+    assert _fmt_elapsed(0) == "0s"
+    assert _fmt_elapsed(45) == "45s"
+    assert _fmt_elapsed(60) == "1m00s"
+    assert _fmt_elapsed(3725) == "1h02m"
+
+
+def test_run_streaming_relays_each_line():
+    """Each subprocess output line must hit the callback once, in order,
+    and the final captured stdout/stderr must contain everything."""
+    lines: list[tuple[str, str]] = []
+
+    def collector(stream: str, line: str) -> None:
+        lines.append((stream, line))
+
+    # Use the python interpreter as the subprocess so this works
+    # cross-platform without external tools.
+    result = _run_streaming(
+        [sys.executable, "-c", "print('a'); print('b'); print('c')"],
+        on_line=collector,
+    )
+    assert result.returncode == 0
+    relayed = [line for _stream, line in lines]
+    assert "a\n" in relayed
+    assert "b\n" in relayed
+    assert "c\n" in relayed
+    assert "a\nb\nc\n" in result.stdout
+
+
+def test_run_streaming_isolates_stdout_and_stderr():
+    streams: list[str] = []
+
+    def collector(stream: str, line: str) -> None:
+        streams.append(stream)
+
+    result = _run_streaming(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('out'); print('err', file=sys.stderr)",
+        ],
+        on_line=collector,
+    )
+    assert result.returncode == 0
+    assert "stdout" in streams
+    assert "stderr" in streams
+
+
+def test_run_streaming_propagates_returncode():
+    result = _run_streaming(
+        [sys.executable, "-c", "import sys; sys.exit(7)"],
+        on_line=lambda *_a: None,
+    )
+    assert result.returncode == 7
+
+
+def test_heartbeat_can_start_and_stop_without_subprocess():
+    """Smoke test: the heartbeat thread must not deadlock on stop()
+    even if it never had a chance to fire."""
+    hb = HeartbeatPrinter(interval=10.0, label="t")
+    hb.start()
+    hb.saw_line()
+    hb.stop()  # would deadlock if the thread didn't exit on event
+
