@@ -380,6 +380,14 @@ def run_port_pipeline(
 
     # final summary footer
     _print_stage_summary(manifest)
+
+    if rc == 0:
+        # Copy-pasteable next-step hint. The addon must be opened in
+        # Hammer 2 (Workshop Tools) for the final .vmap -> .vmap_c
+        # compile; the port itself only generates the .vmap + .vmat / .vmdl
+        # source files. Surfacing the exact command avoids the "now what?"
+        # gap users hit when the port finishes.
+        success(f"Next: csgo2cs2 launch --hammer {addon}")
     return rc
 
 
@@ -1114,6 +1122,15 @@ def _collect_vmf_refs(vmf_path: Path) -> list[str]:
         for face in _SKYBOX_FACES:
             refs.add(f"materials/skybox/{sky}{face}.vmt")
             refs.add(f"materials/skybox/{sky}_{face}.vmt")
+        # CS2 also asks for the *combined* skybox material at
+        # `materials/skybox/<skyname>.vmt` (no face suffix) -- e.g.
+        # `materials/skybox/sky_dust.vmt`. Source-1 didn't ship a real
+        # .vmt at that path, but pak01_*.vpk in modern CSGO sometimes
+        # carries one for the HDR cubemap reference. Emit both the
+        # `sky_<name>` and bare-name variants for source1import to try.
+        refs.add(f"materials/skybox/{sky}.vmt")
+        if not sky.startswith("sky_"):
+            refs.add(f"materials/skybox/sky_{sky}.vmt")
     return sorted(refs)
 
 
@@ -1180,17 +1197,29 @@ def _write_prefab_refs_from_staged(
         # case, so don't fail the pipeline here.
         return 0
     out = maps_dir / f"{mapname}_prefab_refs.txt"
-    merged: set[str] = set()
-    if staged_root is not None and staged_root.is_dir():
-        merged.update(_collect_staged_refs(staged_root))
-    if vmf_path is not None and vmf_path.is_file():
-        merged.update(_collect_vmf_refs(vmf_path))
-    refs = sorted(merged)
+    refs = _build_refs_for_addon(staged_root, vmf_path)
     try:
         out.write_text(_format_refs_kv(refs), encoding="utf-8")
     except OSError:
         return 0
     return len(refs)
+
+
+def _build_refs_for_addon(
+    staged_root: Path | None,
+    vmf_path: Path | None,
+) -> list[str]:
+    """Merge staged-content refs + .vmf-scanned refs into the sorted
+    ref list we feed to source1import. Exposed separately from
+    `_write_prefab_refs_from_staged` so other stages (e.g. the pak01
+    case-fix preprocessor) can see the same view of refs without
+    re-deriving the merge logic."""
+    merged: set[str] = set()
+    if staged_root is not None and staged_root.is_dir():
+        merged.update(_collect_staged_refs(staged_root))
+    if vmf_path is not None and vmf_path.is_file():
+        merged.update(_collect_vmf_refs(vmf_path))
+    return sorted(merged)
 
 
 def _ensure_prefab_refs_stub(cfg: Config, addon: str, mapname: str) -> None:
@@ -1295,6 +1324,25 @@ _CSGO_MIRROR_SUBDIRS = ("materials", "models")
 _CSGO_MIRROR_MANIFEST = ".csgo_mirror_manifest"
 
 
+def _append_mirror_manifest(workspace: Path, new_files: list[str]) -> None:
+    """Append `new_files` to the mirror manifest at
+    `<workspace>/.csgo_mirror_manifest`. Used by both the staged-content
+    mirror and the pak01 case-fix extractor so the cleanup pass removes
+    every loose file we wrote regardless of which step wrote it."""
+    if not new_files:
+        return
+    manifest_path = workspace / _CSGO_MIRROR_MANIFEST
+    existing = ""
+    if manifest_path.is_file():
+        try:
+            existing = manifest_path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    manifest_path.write_text(existing + "\n".join(new_files) + "\n", encoding="utf-8")
+
+
 def _mirror_into_csgo(
     staged_root: Path,
     s1_gameinfo_dir: Path,
@@ -1306,13 +1354,12 @@ def _mirror_into_csgo(
     expects pre-compiled custom content (vmt/vtf/mdl) to live.
 
     Skips files that already exist on the target side (preserves base
-    CSGO content). Records newly-written paths to
+    CSGO content). Appends newly-written paths to
     `<workspace>/.csgo_mirror_manifest` so a later `unmirror` pass can
     roll back just the files we created.
     """
     if not staged_root.is_dir() or not s1_gameinfo_dir.is_dir():
         return 0
-    manifest_path = workspace / _CSGO_MIRROR_MANIFEST
     new_files: list[str] = []
     for sub in _CSGO_MIRROR_SUBDIRS:
         src_root = staged_root / sub
@@ -1329,8 +1376,139 @@ def _mirror_into_csgo(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, target)
             new_files.append(str(target))
-    if new_files:
-        manifest_path.write_text("\n".join(new_files) + "\n", encoding="utf-8")
+    _append_mirror_manifest(workspace, new_files)
+    return len(new_files)
+
+
+# Source 1 .vmts use loose `$<param>` directives whose values are paths
+# (case-folded on Windows fs but case-sensitive against pak01_*.vpk's
+# index). The CSGO ship .vmts sometimes have a mismatched case in their
+# $basetexture / $bumpmap / etc. values (e.g. `"$basetexture"
+# "Dev/dev_hazzardstripe01a"` vs pak01's lowercase
+# `materials/dev/dev_hazzardstripe01a.vtf`). Source1import's case-
+# sensitive VPK lookup then fails silently and the .vmat is never
+# written. We sidestep this by pre-extracting the .vmt + dependent
+# .vtf(s) from pak01 to LOOSE files under `<csgo>/materials/...` --
+# Windows fs is case-insensitive so source1import resolves them no
+# matter what case the .vmt uses internally.
+_VMT_TEX_PARAM_RE = re.compile(
+    r'"?\$(\w+)"?\s+"([^"\r\n]+)"',
+    re.IGNORECASE,
+)
+
+
+def _extract_case_fixed_pak01_assets(
+    refs: list[str],
+    install_dir: Path,
+    workspace: Path,
+) -> int:
+    """For each .vmt ref in `refs` whose source .vmt in pak01_*.vpk has
+    a `$<param>` texture value with case-mismatched pak01 entries,
+    extract the .vmt + its dependent .vtf(s) to LOOSE files under
+    `<install>/csgo/materials/...`. Source1import resolves loose files
+    case-insensitively via Windows fs, so the case mismatch is no
+    longer fatal.
+
+    The `vpk` PyPI package is an optional runtime dependency; if it's
+    not installed we no-op and warn. Records new loose files to the
+    mirror manifest so cleanup removes them too.
+    """
+    if not refs:
+        return 0
+    pak01 = install_dir / "csgo" / "pak01_dir.vpk"
+    if not pak01.is_file():
+        return 0
+    try:
+        import vpk as _vpk  # type: ignore[import-not-found]
+    except ImportError:
+        warn(
+            "Skipping pak01 .vmt case-fix preprocessor: `vpk` package "
+            "not installed. Run `pip install vpk` to enable. Base-CSGO "
+            "materials with mixed-case $basetexture paths may render as "
+            "checkerboards."
+        )
+        return 0
+
+    try:
+        archive = _vpk.VPK(str(pak01))
+        case_map: dict[str, str] = {}
+        for path in archive:
+            case_map[path.lower().replace("\\", "/")] = path
+    except Exception as exc:  # noqa: BLE001
+        warn(f"Skipping pak01 case-fix: couldn't read pak01_dir.vpk ({exc}).")
+        return 0
+
+    csgo_root = install_dir / "csgo"
+    new_files: list[str] = []
+    for ref in refs:
+        if not ref.lower().endswith(".vmt"):
+            continue
+        ref_key = ref.lower().replace("\\", "/")
+        real_vmt = case_map.get(ref_key)
+        if real_vmt is None:
+            continue
+        try:
+            vmt_bytes = archive.get_file(real_vmt).read()
+        except Exception:  # noqa: BLE001
+            continue
+        try:
+            vmt_text = vmt_bytes.decode("latin-1", errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+
+        # Find all $-prefixed texture-path values that could resolve to
+        # a pak01 entry under materials/. Skip non-path values (e.g.
+        # "$surfaceprop" "concrete", "$envmap" "env_cubemap").
+        candidates: set[str] = set()
+        has_case_mismatch = False
+        for m in _VMT_TEX_PARAM_RE.finditer(vmt_text):
+            value = m.group(2).strip()
+            if not value or "/" not in value and "\\" not in value:
+                continue
+            v = value.replace("\\", "/")
+            for ext in (".vtf",):
+                cand = f"materials/{v}{ext}".lower()
+                if cand in case_map:
+                    real = case_map[cand]
+                    candidates.add(real)
+                    if real.lower() != f"materials/{v}{ext}".lower() or (
+                        real != f"materials/{v}{ext}"
+                    ):
+                        # Real-case path differs from literal value's
+                        # case -> source1import's VPK lookup will fail.
+                        if real != f"materials/{v}{ext}":
+                            has_case_mismatch = True
+                    break
+        if not has_case_mismatch:
+            continue
+
+        # Stage the .vmt loose (Windows fs is case-insensitive, so
+        # source1import resolves the $basetexture via fs even if the
+        # .vmt's literal path differs from the .vtf's actual filename).
+        loose_vmt = csgo_root / real_vmt
+        if not loose_vmt.exists():
+            try:
+                loose_vmt.parent.mkdir(parents=True, exist_ok=True)
+                loose_vmt.write_bytes(vmt_bytes)
+                new_files.append(str(loose_vmt))
+            except OSError:
+                continue
+
+        # Stage each dependent .vtf loose, too. If a .vtf was already
+        # staged by the workshop mirror we leave it alone.
+        for vtf_pak_path in candidates:
+            loose_vtf = csgo_root / vtf_pak_path
+            if loose_vtf.exists():
+                continue
+            try:
+                vtf_bytes = archive.get_file(vtf_pak_path).read()
+                loose_vtf.parent.mkdir(parents=True, exist_ok=True)
+                loose_vtf.write_bytes(vtf_bytes)
+                new_files.append(str(loose_vtf))
+            except Exception:  # noqa: BLE001
+                continue
+
+    _append_mirror_manifest(workspace, new_files)
     return len(new_files)
 
 
@@ -1485,6 +1663,22 @@ def _stage_and_import(
             f"Wrote {n_refs} ref(s) to {mapname}_prefab_refs.txt for "
             "per-asset s1->s2 conversion (staged content + .vmf material "
             "+ model references)."
+        )
+
+    # Case-fix pre-extract: for each .vmt ref whose source in pak01_*.vpk
+    # has a case-mismatched $basetexture / $bumpmap / etc. (e.g.
+    # `Dev/dev_hazzardstripe01a` vs pak01's `dev/dev_hazzardstripe01a`),
+    # stage the .vmt + dependent .vtfs as LOOSE files under <csgo>/. The
+    # Windows fs is case-insensitive, so source1import resolves them
+    # regardless of the .vmt's literal path case -- whereas its
+    # case-SENSITIVE pak01 lookup would otherwise drop the .vmt silently.
+    refs_for_fix = _build_refs_for_addon(s1_content_dir, vmf_for_refs)
+    n_case_fixed = _extract_case_fixed_pak01_assets(refs_for_fix, install, workspace)
+    if n_case_fixed:
+        success(
+            f"Pre-extracted {n_case_fixed} pak01 asset(s) with mixed-case "
+            "$basetexture paths to loose files (workaround for "
+            "source1import's case-sensitive VPK lookup)."
         )
 
     info(f"Invoking import_map_community.py for `{addon}` / map `{mapname}`...")

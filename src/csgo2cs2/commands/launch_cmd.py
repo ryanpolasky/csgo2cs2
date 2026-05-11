@@ -225,9 +225,12 @@ def run(args: argparse.Namespace) -> int:
             ".vmap directly."
         )
         info(
-            f"To compile + load: `csgo2cs2 launch --hammer {addon}`, then "
-            "in Hammer open the map and use Map -> Build Map. cs2 will "
-            "launch with the compiled .vmap_c."
+            f"To compile + load: `csgo2cs2 launch --hammer {addon}`. "
+            "When Workshop Tools opens (Asset Browser by default), click "
+            "the **Hammer** icon in the top-left toolbar, then File -> "
+            "Open and select the .vmap, then File -> Build Map -> Fast "
+            "Compile -> Build. cs2 will then launch with the compiled "
+            ".vmap_c."
         )
         return 2
 
@@ -247,9 +250,11 @@ def run(args: argparse.Namespace) -> int:
             vmap_path = content_addon_dir / "maps" / f"{candidate_map}.vmap"
             if vmap_path.is_file():
                 info(
-                    "Workshop Tools doesn't auto-load maps. In Hammer: "
+                    "Workshop Tools doesn't auto-load maps. When it "
+                    "opens (Asset Browser by default), click the "
+                    "**Hammer** icon in the top-left toolbar. Then "
                     f"File -> Open and select `{vmap_path}`, then "
-                    "Map -> Build Map."
+                    "File -> Build Map -> Fast Compile -> Build."
                 )
 
     if args.print_only:
@@ -274,4 +279,3 @@ def run(args: argparse.Namespace) -> int:
         return 1
     success(f"Launched cs2 (`{addon}`{' / ' + mapname if mapname else ''}).")
     return 0
-

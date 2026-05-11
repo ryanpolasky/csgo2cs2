@@ -10,11 +10,13 @@ from __future__ import annotations
 from csgo2cs2.config import Config
 from csgo2cs2.pipeline import (
     _CONTENTDIR_MARKER,
+    _build_refs_for_addon,
     _collect_staged_refs,
     _collect_vmf_refs,
     _content_addon_dir,
     _content_addon_maps_dir,
     _ensure_prefab_refs_stub,
+    _extract_case_fixed_pak01_assets,
     _fix_vmdl_bodygroup_choices_text,
     _format_refs_kv,
     _importer_logged_successful_import,
@@ -229,7 +231,9 @@ def test_collect_vmf_refs_emits_skybox_faces(tmp_path):
         encoding="utf-8",
     )
     refs = _collect_vmf_refs(vmf)
-    expected = []
+    expected = ["materials/skybox/sky_dust.vmt"]
+    # `sky_dust` already starts with `sky_`, so no `sky_sky_dust.vmt`
+    # duplicate is emitted.
     for face in ("up", "dn", "lf", "rt", "ft", "bk"):
         expected.append(f"materials/skybox/sky_dust{face}.vmt")
         expected.append(f"materials/skybox/sky_dust_{face}.vmt")
@@ -588,3 +592,198 @@ def test_patch_vmdl_bodygroup_choices_handles_missing_models_dir(tmp_path):
     assert addon_dir is not None
     addon_dir.mkdir(parents=True)  # no models/ subdir
     assert _patch_vmdl_bodygroup_choices(cfg, "test_addon") == (0, 0)
+
+
+# --- build_refs_for_addon ---------------------------------------------------
+
+
+def test_build_refs_for_addon_merges_staged_and_vmf(tmp_path):
+    # `_build_refs_for_addon` is the shared merge helper used by
+    # `_write_prefab_refs_from_staged` AND the pak01 case-fix
+    # preprocessor. Both must see the same ref set.
+    staged = tmp_path / "staged"
+    (staged / "materials" / "foo").mkdir(parents=True)
+    (staged / "materials" / "foo" / "bar.vmt").write_text("x")
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text(
+        'world\n{\n  "skyname" "sky_dust"\n}\n'
+        'side\n{\n  "material" "metal/hr_metal/hr_metal_wall_a"\n}\n',
+        encoding="utf-8",
+    )
+    refs = _build_refs_for_addon(staged, vmf)
+    assert "materials/foo/bar.vmt" in refs
+    assert "materials/metal/hr_metal/hr_metal_wall_a.vmt" in refs
+    assert "materials/skybox/sky_dust.vmt" in refs
+    assert "materials/skybox/sky_dust_up.vmt" in refs
+
+
+def test_build_refs_for_addon_handles_missing_inputs(tmp_path):
+    # Both staged + vmf absent -> empty list (writer then emits empty KV).
+    assert _build_refs_for_addon(None, None) == []
+    assert _build_refs_for_addon(tmp_path / "nope", None) == []
+    assert _build_refs_for_addon(None, tmp_path / "nope.vmf") == []
+
+
+# --- skybox unsuffixed combined-ref emission --------------------------------
+
+
+def test_collect_vmf_refs_emits_unsuffixed_skybox_with_sky_prefix(tmp_path):
+    # CS2 also asks for the combined `sky_<skyname>.vmt` (no face suffix);
+    # we emit it alongside the 6-face set. When the skyname already
+    # starts with `sky_` (e.g. `sky_dust`), we don't add a `sky_sky_dust`
+    # duplicate.
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text('world\n{\n  "skyname" "dust"\n}\n', encoding="utf-8")
+    refs = _collect_vmf_refs(vmf)
+    assert "materials/skybox/dust.vmt" in refs
+    assert "materials/skybox/sky_dust.vmt" in refs
+    # 6 faces x 2 conventions + 2 unsuffixed (bare + sky_-prefixed) = 14
+    assert len(refs) == 14
+
+
+def test_collect_vmf_refs_skips_sky_prefix_when_skyname_already_prefixed(tmp_path):
+    # `sky_dust` already starts with `sky_`, so we only emit one
+    # unsuffixed variant (the bare one), not `sky_sky_dust.vmt`.
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text('world\n{\n  "skyname" "sky_dust"\n}\n', encoding="utf-8")
+    refs = _collect_vmf_refs(vmf)
+    assert "materials/skybox/sky_dust.vmt" in refs
+    assert "materials/skybox/sky_sky_dust.vmt" not in refs
+
+
+# --- pak01 case-fix preprocessor --------------------------------------------
+
+
+def _build_synthetic_pak01(install_dir, vmt_path, vmt_text, vtf_path):
+    """Build a minimal pak01_dir.vpk under `<install>/csgo/` containing
+    one .vmt + one .vtf at the given paths. The vpk library indexes
+    whatever paths we hand it via the on-disk layout, so we use a
+    temp dir to seed the file structure and then save the vpk."""
+    import shutil
+    import tempfile
+
+    import vpk
+
+    csgo_dir = install_dir / "csgo"
+    csgo_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path as _Path
+
+        pakroot = _Path(tmp) / "pakroot"
+        (pakroot / vmt_path).parent.mkdir(parents=True, exist_ok=True)
+        (pakroot / vmt_path).write_text(vmt_text, encoding="latin-1")
+        (pakroot / vtf_path).parent.mkdir(parents=True, exist_ok=True)
+        (pakroot / vtf_path).write_bytes(b"\x00VTF_BLOB" * 8)
+
+        new_vpk = vpk.new(str(pakroot))
+        out = csgo_dir / "pak01_dir.vpk"
+        new_vpk.save(str(out))
+        shutil.rmtree(pakroot, ignore_errors=True)
+    return csgo_dir / "pak01_dir.vpk"
+
+
+def test_extract_case_fixed_pak01_assets_handles_capital_d_basetexture(tmp_path):
+    # Reproduce the dev_hazzardstripe01a bug: pak01 stores the .vtf at
+    # `materials/dev/dev_hazzardstripe01a.vtf` (lowercase) but the .vmt's
+    # `$basetexture` value is `Dev/dev_hazzardstripe01a` (capital D).
+    # source1import's case-sensitive VPK lookup misses the .vtf and
+    # silently drops the .vmt. We stage both as loose files under
+    # <csgo>/ so Windows' case-insensitive fs resolves them.
+    install = tmp_path / "Counter-Strike Global Offensive"
+    _build_synthetic_pak01(
+        install,
+        vmt_path="materials/dev/dev_hazzardstripe01a.vmt",
+        vmt_text=(
+            '"LightmappedGeneric"\n{\n'
+            '\t"$basetexture" "Dev/dev_hazzardstripe01a"\n'
+            '\t"$surfaceprop" "concrete"\n}\n'
+        ),
+        vtf_path="materials/dev/dev_hazzardstripe01a.vtf",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    refs = ["materials/dev/dev_hazzardstripe01a.vmt"]
+
+    n = _extract_case_fixed_pak01_assets(refs, install, workspace)
+    assert n == 2  # .vmt + .vtf
+    loose_vmt = install / "csgo" / "materials" / "dev" / "dev_hazzardstripe01a.vmt"
+    loose_vtf = install / "csgo" / "materials" / "dev" / "dev_hazzardstripe01a.vtf"
+    assert loose_vmt.is_file()
+    assert loose_vtf.is_file()
+    manifest = (workspace / ".csgo_mirror_manifest").read_text(encoding="utf-8")
+    assert str(loose_vmt) in manifest
+    assert str(loose_vtf) in manifest
+
+
+def test_extract_case_fixed_pak01_assets_skips_clean_vmts(tmp_path):
+    # When the .vmt's $basetexture already matches pak01's actual case,
+    # source1import resolves it fine; we don't need to stage anything.
+    install = tmp_path / "Counter-Strike Global Offensive"
+    _build_synthetic_pak01(
+        install,
+        vmt_path="materials/concrete/floor.vmt",
+        vmt_text=(
+            '"LightmappedGeneric"\n{\n'
+            '\t"$basetexture" "concrete/floor"\n}\n'  # lowercase, matches pak01
+        ),
+        vtf_path="materials/concrete/floor.vtf",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    refs = ["materials/concrete/floor.vmt"]
+    assert _extract_case_fixed_pak01_assets(refs, install, workspace) == 0
+
+
+def test_extract_case_fixed_pak01_assets_no_pak01(tmp_path):
+    # No pak01_dir.vpk -> nothing to do, no error.
+    install = tmp_path / "no_csgo"
+    install.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    assert _extract_case_fixed_pak01_assets(["materials/x.vmt"], install, workspace) == 0
+
+
+def test_extract_case_fixed_pak01_assets_empty_refs(tmp_path):
+    # No refs in the prefab list -> no-op early.
+    install = tmp_path / "Counter-Strike Global Offensive"
+    install.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    assert _extract_case_fixed_pak01_assets([], install, workspace) == 0
+
+
+def test_extract_case_fixed_pak01_assets_appends_to_existing_manifest(tmp_path):
+    # The mirror fix may have already written a manifest with workshop
+    # paths; we must APPEND to it (not overwrite) so cleanup removes
+    # both sets of loose files.
+    install = tmp_path / "Counter-Strike Global Offensive"
+    _build_synthetic_pak01(
+        install,
+        vmt_path="materials/dev/dev_hazzardstripe01a.vmt",
+        vmt_text=('"LightmappedGeneric"\n{\n' '\t"$basetexture" "Dev/dev_hazzardstripe01a"\n}\n'),
+        vtf_path="materials/dev/dev_hazzardstripe01a.vtf",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    # Pre-existing manifest entry (as if _mirror_into_csgo already wrote it).
+    existing = install / "csgo" / "materials" / "wood" / "workshop_wood.vmt"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("placeholder")
+    (workspace / ".csgo_mirror_manifest").write_text(
+        f"{existing}\n",
+        encoding="utf-8",
+    )
+
+    refs = ["materials/dev/dev_hazzardstripe01a.vmt"]
+    n = _extract_case_fixed_pak01_assets(refs, install, workspace)
+    assert n == 2
+
+    manifest = (workspace / ".csgo_mirror_manifest").read_text(encoding="utf-8")
+    # Original workshop entry preserved
+    assert str(existing) in manifest
+    # New case-fixed paths appended
+    loose_vmt = install / "csgo" / "materials" / "dev" / "dev_hazzardstripe01a.vmt"
+    loose_vtf = install / "csgo" / "materials" / "dev" / "dev_hazzardstripe01a.vtf"
+    assert str(loose_vmt) in manifest
+    assert str(loose_vtf) in manifest
