@@ -19,6 +19,7 @@ from csgo2cs2.utils.backup import backup_path_for
 class FakeCfg:
     csgo_install_path: Optional[str]
     cs2_bin_path: Optional[str]
+    import_script_path: Optional[str] = None
 
 
 def _make_install(tmp_path: Path) -> tuple[Path, Path, Path, Path]:

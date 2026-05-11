@@ -22,6 +22,7 @@ class FakeCfg:
     csgo_install_path: Optional[str]
     cs2_bin_path: Optional[str]
     workspace_dir: str
+    import_script_path: Optional[str] = None
 
 
 def _make_install(tmp_path: Path) -> tuple[FakeCfg, Path, Path]:
@@ -154,3 +155,28 @@ def test_doctor_drift_silent_when_unchanged(tmp_path: Path, capsys: pytest.Captu
     doctor_mod._check_drift_state(cfg, tracked2)
     err = capsys.readouterr().err
     assert "patch drift detected" not in err
+
+
+
+def test_doctor_fix_patches_cached_importer_via_import_script_path(tmp_path: Path) -> None:
+    """Regression: `tools install` writes the importer into the tools
+    cache and records it as `cfg.import_script_path`. The port pipeline
+    runs *that* copy, so `doctor --fix` has to patch the same file --
+    not just the legacy in-CS:GO-install locations. Without this, the
+    `.decode()` patch never reaches the script that actually executes
+    and the import stage crashes mid-port on Windows."""
+    install = tmp_path / "csgo"  # empty install -- no legacy importer copy here
+    install.mkdir()
+    cached = tmp_path / "tools" / "import_map_community" / "import_map_community.py"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("import sys\nsys.argv[1].decode('utf-8')\n", encoding="utf-8")
+
+    cfg = FakeCfg(
+        csgo_install_path=str(install),
+        cs2_bin_path=None,
+        workspace_dir=str(tmp_path / "ws"),
+        import_script_path=str(cached),
+    )
+    tracked = doctor_mod._check_install_patches(cfg, fix=True, issues=[], fixes_applied=[])
+    assert cached in tracked
+    assert ".decode(" not in cached.read_text(encoding="utf-8")

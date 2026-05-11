@@ -25,6 +25,26 @@ from ..utils.steam import find_csgo_install
 DECODE_MARKER = ".decode("
 
 
+def _importer_candidates(cfg) -> List[Path]:
+    """Candidate paths for `import_map_community.py`, in priority order:
+    the path `tools install` recorded in config first, then the legacy
+    in-CS:GO-install locations users may have pre-extracted into. The
+    port pipeline executes whichever resolves to a real file, so
+    `--fix` has to patch the same one."""
+    out: List[Path] = []
+    if cfg.import_script_path:
+        out.append(Path(cfg.import_script_path))
+    if cfg.csgo_install_path:
+        install = Path(cfg.csgo_install_path)
+        out.extend(
+            [
+                install / "game" / "csgo" / "scripts" / "import_map_community.py",
+                install / "game" / "bin" / "win64" / "import_map_community.py",
+            ]
+        )
+    return out
+
+
 def register(subparsers) -> None:
     p = subparsers.add_parser(
         "doctor",
@@ -250,14 +270,7 @@ def _check_install_patches_silent(
     cfg, fix: bool, issues: List[str], fixes_applied: List[str]
 ) -> List[Path]:
     tracked: List[Path] = []
-    if not cfg.csgo_install_path:
-        return tracked
-    install = Path(cfg.csgo_install_path)
-    importer_candidates = [
-        install / "game" / "csgo" / "scripts" / "import_map_community.py",
-        install / "game" / "bin" / "win64" / "import_map_community.py",
-    ]
-    importer = next((p for p in importer_candidates if p.exists()), None)
+    importer = next((p for p in _importer_candidates(cfg) if p.exists()), None)
     if importer:
         tracked.append(importer)
         if has_marker(importer, DECODE_MARKER):
@@ -288,18 +301,13 @@ def _summarize_patches(cfg) -> Dict[str, Any]:
         "import_map_community_py": None,
         "vpk_signatures": None,
     }
-    if cfg.csgo_install_path:
-        install = Path(cfg.csgo_install_path)
-        for cand in (
-            install / "game" / "csgo" / "scripts" / "import_map_community.py",
-            install / "game" / "bin" / "win64" / "import_map_community.py",
-        ):
-            if cand.exists():
-                out["import_map_community_py"] = {
-                    "path": str(cand),
-                    "patched": not has_marker(cand, DECODE_MARKER),
-                }
-                break
+    for cand in _importer_candidates(cfg):
+        if cand.exists():
+            out["import_map_community_py"] = {
+                "path": str(cand),
+                "patched": not has_marker(cand, DECODE_MARKER),
+            }
+            break
     if cfg.cs2_bin_path:
         sigs = Path(cfg.cs2_bin_path) / "vpk.signatures"
         renamed = sigs.with_suffix(sigs.suffix + ".old")
@@ -333,18 +341,9 @@ def _check_install_patches(
     """returns the list of paths whose post-fix state should be tracked
     for drift detection on subsequent runs."""
     tracked: List[Path] = []
-    if not cfg.csgo_install_path:
-        warn("Skipping install patch checks (csgo_install_path not set)")
-        return tracked
-
-    install = Path(cfg.csgo_install_path)
 
     # import_map_community.py `.decode()` patch
-    importer_candidates = [
-        install / "game" / "csgo" / "scripts" / "import_map_community.py",
-        install / "game" / "bin" / "win64" / "import_map_community.py",
-    ]
-    importer = next((p for p in importer_candidates if p.exists()), None)
+    importer = next((p for p in _importer_candidates(cfg) if p.exists()), None)
     if importer:
         # we always track the importer path: when it's still patched
         # (success branch) drift will report unchanged; when it's been
@@ -443,19 +442,15 @@ def _patch_remove_decode(path: Path) -> None:
 # having to remember which fixes were applied.
 def _run_unfix(cfg) -> int:
     header("Reversing install patches")
-    if not cfg.csgo_install_path:
-        error("csgo_install_path not set; nothing to unfix.")
+    if not (cfg.csgo_install_path or cfg.import_script_path or cfg.cs2_bin_path):
+        error("Nothing to unfix: csgo_install_path, import_script_path, and cs2_bin_path are all unset.")
         return 1
 
-    install = Path(cfg.csgo_install_path)
     reversed_count = 0
     skipped: List[str] = []
 
     # 1. restore import_map_community.py from its backup if one exists.
-    importer_candidates = [
-        install / "game" / "csgo" / "scripts" / "import_map_community.py",
-        install / "game" / "bin" / "win64" / "import_map_community.py",
-    ]
+    importer_candidates = _importer_candidates(cfg)
     importer = next((p for p in importer_candidates if p.exists()), None)
     if importer is None:
         # the backup may still exist even if the patched file is gone (rare).
