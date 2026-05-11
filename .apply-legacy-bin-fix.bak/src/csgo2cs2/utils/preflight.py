@@ -12,7 +12,6 @@ from __future__ import annotations
 import os
 import shutil
 import string
-import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -383,85 +382,3 @@ def format_report(report: PreflightReport) -> str:
 # environment escape hatch for users who know what they're doing
 def is_skip_requested() -> bool:
     return bool(os.environ.get("CSGO2CS2_SKIP_PREFLIGHT"))
-
-
-# ---- interactive auto-fix --------------------------------------------------
-#
-# Some preflight failures have an obvious one-shot fix that we can apply on
-# the user's behalf (with explicit confirmation): relocating workspace_dir
-# off a path with a space being the canonical example. The fixer mutates
-# cfg + persists to disk, then the caller is expected to re-run preflight.
-
-
-def _default_safe_workspace() -> Path:
-    """Suggested workspace path that is guaranteed not to contain a space
-    on either platform's typical home directory."""
-    if is_windows():
-        return Path("C:/csgo2cs2/workspace")
-    return Path.home() / "csgo2cs2" / "workspace"
-
-
-_AUTOFIXABLE_IDS = frozenset({"workspace_has_space", "workspace_not_writable"})
-
-
-def try_autofix_interactive(
-    cfg: Config,
-    config_path: Optional[str],
-    report: PreflightReport,
-    *,
-    prompt_fn=input,
-    print_fn=print,
-) -> bool:
-    """Offer interactive fixes for known-fixable preflight errors. Mutates
-    cfg + persists to disk and returns True if at least one fix was
-    applied (caller should re-run preflight). Returns False if there are
-    no fixable errors, the user declined, or stdin is not a TTY.
-
-    Currently handles only workspace path problems -- the most common
-    first-port blocker, especially on Windows where USERPROFILE has a
-    space in it."""
-    from ..config import save_config
-
-    fixable = [iss for iss in report.errors if iss.id in _AUTOFIXABLE_IDS]
-    if not fixable:
-        return False
-
-    # if stdin isn't a tty (CI, piped input, etc.) bail rather than hang
-    # on input(). the caller's existing error path will surface the issue.
-    if prompt_fn is input and not sys.stdin.isatty():
-        return False
-
-    suggested = _default_safe_workspace()
-    print_fn("")
-    print_fn(
-        "csgo2cs2 can relocate the workspace for you. It will not move any "
-        "existing data; it just updates the path in config.json. Re-run "
-        "the port afterwards."
-    )
-    print_fn(f"  Current : {cfg.workspace_dir}")
-    print_fn(f"  Suggest : {suggested}")
-    try:
-        raw = prompt_fn(
-            "New workspace_dir [Enter = use suggestion, or type a path, or Ctrl-C to cancel]: "
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        print_fn("")
-        return False
-
-    chosen = Path(raw).expanduser() if raw else suggested
-    if " " in str(chosen):
-        print_fn(f"refusing: {chosen} also contains a space. aborting auto-fix.")
-        return False
-    try:
-        chosen.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        print_fn(f"refusing: could not create {chosen}: {exc}")
-        return False
-    if not _safe_dir_writable(chosen):
-        print_fn(f"refusing: {chosen} is not writable.")
-        return False
-
-    cfg.workspace_dir = str(chosen)
-    save_config(cfg, config_path)
-    print_fn(f"workspace_dir updated to {chosen} and persisted to config.")
-    return True

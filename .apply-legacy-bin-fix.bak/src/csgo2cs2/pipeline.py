@@ -18,7 +18,7 @@ from .logging_utils import error, header, info, success, warn
 from .platform_check import require_windows
 from .tools.bspsource import BSPSource
 from .tools.import_map import ImportInputs, ImportMapTool
-from .tools.steamcmd import CSGO_APP_ID, SteamCMD, resolve_downloaded_bsp
+from .tools.steamcmd import CSGO_APP_ID, SteamCMD
 from .utils.known_errors import match_error
 from .utils.manifest import (
     PORT_STAGES,
@@ -29,12 +29,7 @@ from .utils.manifest import (
     WorkshopMeta,
 )
 from .utils.paths import ensure_dir, find_first
-from .utils.preflight import (
-    format_report,
-    is_skip_requested,
-    run_preflight,
-    try_autofix_interactive,
-)
+from .utils.preflight import format_report, is_skip_requested, run_preflight
 from .utils.retry import RetryPolicy, retry_until
 from .utils.run_log import current as current_log
 from .utils.run_log import log_event
@@ -145,22 +140,12 @@ def run_port_pipeline(
 
     # ----- preflight ----------------------------------------------------
     if not skip_preflight and not is_skip_requested():
-        # one pass plus one retry-after-autofix attempt: if the user fixes
-        # workspace_dir interactively we want to re-check, but no further
-        # loops to keep behavior predictable.
-        for attempt in range(2):
-            report = run_preflight(
-                cfg,
-                addon=addon,
-                skip_import=skip_import or bool(local_bsp),
-                overwrite=overwrite,
-            )
-            if not report.errors:
-                break
-            if attempt == 0 and try_autofix_interactive(cfg, config_path, report):
-                info("Re-running preflight after auto-fix...")
-                continue
-            break
+        report = run_preflight(
+            cfg,
+            addon=addon,
+            skip_import=skip_import or bool(local_bsp),
+            overwrite=overwrite,
+        )
         if report.warnings:
             info("Preflight warnings:")
             for w in report.warnings:
@@ -394,8 +379,10 @@ def _print_stage_summary(manifest: PortManifest) -> None:
 
 def _resolve_existing_bsp(cfg: Config, workshop_id: str) -> Optional[Path]:
     cmd = SteamCMD(cfg.steamcmd_path)
-    scratch = Path(cfg.workspace_dir).expanduser() / workshop_id
-    return resolve_downloaded_bsp(cmd, workshop_id, scratch)
+    expected = cmd.expected_workshop_path(workshop_id)
+    if not expected or not expected.exists():
+        return None
+    return find_first(expected, ["*.bsp"])
 
 
 # soft-fails: a flaky Steam web call must NOT kill the actual port.
@@ -483,7 +470,6 @@ def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
         return None
 
     expected = cmd.expected_workshop_path(workshop_id)
-    scratch = Path(cfg.workspace_dir).expanduser() / workshop_id
 
     def attempt():
         result = cmd.download_workshop_item(
@@ -502,13 +488,9 @@ def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
         return result
 
     def is_success(result) -> bool:
-        # accept either a raw .bsp (logged-in or s2-era downloads) or
-        # a *_legacy.bin (anonymous downloads, every platform).
-        # resolve_downloaded_bsp does the unwrap silently.
-        try:
-            return resolve_downloaded_bsp(cmd, workshop_id, scratch) is not None
-        except RuntimeError:
-            return False
+        if expected and expected.exists() and any(expected.glob("*.bsp")):
+            return True
+        return False
 
     policy = RetryPolicy(
         attempts=max(1, cfg.steamcmd_retries),
@@ -527,19 +509,12 @@ def _download(cfg: Config, workshop_id: str) -> Optional[Path]:
     if result.returncode != 0:
         warn(f"SteamCMD exit code: {result.returncode}")
         _surface_known_error((result.stdout or "") + "\n" + (result.stderr or ""))
-    try:
-        bsp = resolve_downloaded_bsp(cmd, workshop_id, scratch)
-    except RuntimeError as exc:
-        error(str(exc))
+    if not expected or not expected.exists():
+        error("Workshop content folder not found after SteamCMD run.")
         return None
-    if bsp is None:
-        if expected and expected.exists():
-            error(
-                f"No .bsp or *_legacy.bin found inside {expected} (contents: "
-                f"{[p.name for p in sorted(expected.iterdir())]})"
-            )
-        else:
-            error("Workshop content folder not found after SteamCMD run.")
+    bsp = find_first(expected, ["*.bsp"])
+    if not bsp:
+        error(f"No .bsp inside {expected}")
         return None
     success(f"Downloaded: {bsp}")
     return bsp

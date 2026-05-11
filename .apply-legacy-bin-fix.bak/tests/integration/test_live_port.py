@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import zipfile
 from pathlib import Path
+from typing import List
 
 import pytest
 
 from csgo2cs2.analyzers.vmf import analyze_vmf
 from csgo2cs2.config import load_config
 from csgo2cs2.tools.bspsource import BSPSource
-from csgo2cs2.tools.steamcmd import SteamCMD, resolve_downloaded_bsp
+from csgo2cs2.tools.steamcmd import SteamCMD
 
 pytestmark = pytest.mark.integration
 
@@ -75,23 +77,72 @@ def _looks_like_permanent_workshop_error(text: str) -> bool:
     return any(n in text for n in needles)
 
 
-def _require_bsp(steam: SteamCMD, workshop_id: str, scratch_root: Path) -> Path:
-    """Wrapper around `resolve_downloaded_bsp` that turns a missing
-    payload into a clear test failure with a directory listing so the
-    CI log explains *why* there is no BSP."""
-    bsp = resolve_downloaded_bsp(steam, workshop_id, scratch_root)
-    if bsp is not None:
-        return bsp
-    from csgo2cs2.tools.steamcmd import candidate_workshop_dirs
+def _candidate_workshop_dirs(steam: SteamCMD, workshop_id: str) -> List[Path]:
+    """Where SteamCMD might have dropped the workshop item, in order of
+    likelihood. SteamCMD's Linux build defaults to ~/Steam/ for data
+    storage even if its binary lives elsewhere; the Windows build keeps
+    everything under its install dir. We probe both."""
+    candidates: List[Path] = []
+    expected = steam.expected_workshop_path(workshop_id)
+    if expected:
+        candidates.append(expected)
+    home = Path.home()
+    candidates.append(home / "Steam" / "steamapps" / "workshop" / "content" / "730" / workshop_id)
+    seen: set = set()
+    out: List[Path] = []
+    for c in candidates:
+        s = str(c.resolve()) if c.exists() else str(c)
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(c)
+    return out
 
-    inspected: list[str] = []
-    for d in candidate_workshop_dirs(steam, workshop_id):
-        if d.exists():
-            inspected.append(f"{d} ({[p.name for p in sorted(d.iterdir())]})")
-        else:
+
+def _unwrap_legacy_bin(legacy_bin: Path, extract_dir: Path) -> Path:
+    """SteamCMD's anonymous downloads for CS:GO workshop items come down
+    as a `<numeric_id>_legacy.bin` blob -- a ZIP container holding the
+    actual `.bsp`. Unwrap it so the test can hand a real `.bsp` to
+    BSPSource."""
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    if not zipfile.is_zipfile(legacy_bin):
+        head = legacy_bin.read_bytes()[:4]
+        if head == b"VBSP":
+            target = extract_dir / (legacy_bin.stem + ".bsp")
+            target.write_bytes(legacy_bin.read_bytes())
+            return target
+        raise RuntimeError(f"{legacy_bin} is neither a zip nor a raw BSP (magic={head!r})")
+    with zipfile.ZipFile(legacy_bin) as zf:
+        zf.extractall(extract_dir)
+    bsps = sorted(extract_dir.rglob("*.bsp"))
+    if not bsps:
+        with zipfile.ZipFile(legacy_bin) as zf:
+            names = zf.namelist()[:8]
+        raise RuntimeError(f"{legacy_bin} unwrapped but contained no .bsp (sample: {names})")
+    return max(bsps, key=lambda p: p.stat().st_size)
+
+
+def _resolve_downloaded_bsp(steam: SteamCMD, workshop_id: str, scratch_root: Path) -> Path:
+    """Find the .bsp SteamCMD just dropped onto disk, accounting for
+    the platform-specific quirks in `_candidate_workshop_dirs` and the
+    `*_legacy.bin` ZIP wrapping in `_unwrap_legacy_bin`."""
+    candidates = _candidate_workshop_dirs(steam, workshop_id)
+    inspected: List[str] = []
+    for d in candidates:
+        if not d.exists():
             inspected.append(f"{d} (missing)")
+            continue
+        contents = sorted(d.iterdir())
+        inspected.append(f"{d} ({[p.name for p in contents]})")
+        bsps = sorted(d.glob("*.bsp"))
+        if bsps:
+            return max(bsps, key=lambda p: p.stat().st_size)
+        legacy_bins = sorted(d.glob("*_legacy.bin")) + sorted(d.glob("*.bin"))
+        if legacy_bins:
+            target_dir = scratch_root / "unwrap" / workshop_id
+            return _unwrap_legacy_bin(max(legacy_bins, key=lambda p: p.stat().st_size), target_dir)
     raise FileNotFoundError(
-        "No BSP found at any candidate SteamCMD workshop path. Probed: " + "; ".join(inspected)
+        "No BSP found at any candidate SteamCMD workshop path. " "Probed: " + "; ".join(inspected)
     )
 
 
@@ -137,7 +188,7 @@ def test_steamcmd_anonymous_workshop_download_succeeds(
             f"adapter glue. tail:\n{stdout[-800:]}"
         )
 
-    bsp = _require_bsp(steam, live_workshop_id, live_workspace)
+    bsp = _resolve_downloaded_bsp(steam, live_workshop_id, live_workspace)
     assert bsp.stat().st_size > 0, f"BSP at {bsp} is empty"
 
 
@@ -186,7 +237,7 @@ def test_full_chain_download_decompile_analyze(
             "SteamCMD reported a Steam-side transient (download). " f"tail:\n{stdout[-800:]}"
         )
 
-    bsp = _require_bsp(steam, live_workshop_id, live_workspace)
+    bsp = _resolve_downloaded_bsp(steam, live_workshop_id, live_workspace)
     assert bsp.exists() and bsp.stat().st_size > 0
 
     # decompile
