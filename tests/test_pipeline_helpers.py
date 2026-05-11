@@ -64,3 +64,53 @@ def test_stage_vmf_missing_source_raises(tmp_path: Path):
     workspace.mkdir()
     with pytest.raises(FileNotFoundError):
         _stage_vmf(tmp_path / "missing.vmf", workspace, "x")
+
+
+# --- --debug tee --------------------------------------------------------
+
+
+def test_debug_tee_mirrors_stdout_to_log(tmp_path: Path):
+    """`csgo2cs2 port --debug` installs _DebugTee, which mirrors every
+    print() to BOTH the original sys.stdout and a per-run log file under
+    the workspace. Verify the mirror works and the log path is in the
+    expected place."""
+    import sys
+
+    from csgo2cs2.pipeline import _DebugTee
+
+    workspace = tmp_path / "ws-419404847"
+    workspace.mkdir()
+    tee = _DebugTee(workspace)
+    tee.install()
+    try:
+        print("hello from --debug")
+        sys.stderr.write("err line\n")
+    finally:
+        tee.uninstall()
+
+    # log lives in the workspace, named port-<timestamp>.log
+    assert tee.log_path.parent == workspace
+    assert tee.log_path.name.startswith("port-")
+    assert tee.log_path.name.endswith(".log")
+
+    body = tee.log_path.read_text(encoding="utf-8")
+    assert "hello from --debug" in body
+    assert "err line" in body
+
+
+def test_debug_tee_uninstall_restores_streams(tmp_path: Path):
+    """After uninstall(), sys.stdout / sys.stderr must be the originals
+    again (no lingering _TeeStream wrappers, no leaked file handles)."""
+    import sys
+
+    from csgo2cs2.pipeline import _DebugTee, _TeeStream
+
+    orig_out = sys.stdout
+    orig_err = sys.stderr
+    tee = _DebugTee(tmp_path)
+    tee.install()
+    assert isinstance(sys.stdout, _TeeStream)
+    assert isinstance(sys.stderr, _TeeStream)
+    tee.uninstall()
+    assert sys.stdout is orig_out
+    assert sys.stderr is orig_err

@@ -11,7 +11,7 @@ from pathlib import Path
 from . import fixers  # noqa: F401  (registers fixers on import)
 from .analyzers.bsp import inspect_bsp
 from .analyzers.vmf import analyze_vmf
-from .config import Config, load_config
+from .config import Config, load_config, config_path
 from .extract import extract_bsp_assets
 from .fixers.base import apply_all
 from .logging_utils import error, header, info, success, warn
@@ -71,6 +71,99 @@ def _record_subprocess(tool: str, argv: list, returncode: int, stdout: str, stde
         log.record_subprocess(tool, argv, returncode, stdout, stderr)
 
 
+class _TeeStream:
+    """Write-only file-like wrapper that mirrors every write to BOTH the
+    original stream (terminal) and a log file. Used by `_DebugTee` for
+    `csgo2cs2 port --debug`."""
+
+    def __init__(self, original, log_fp) -> None:
+        self._orig = original
+        self._log = log_fp
+        # Best-effort encoding for downstream code that inspects
+        # `sys.stdout.encoding` (e.g. the rule-char fallback in
+        # logging_utils).
+        self.encoding = getattr(original, "encoding", "utf-8") or "utf-8"
+
+    def write(self, s):
+        # Mirror first to log (UTF-8) so even Windows cp1252 console
+        # encode errors don't lose the line from the log. Then write to
+        # the original stream; if that raises, swallow + continue so the
+        # log stays consistent.
+        try:
+            self._log.write(s)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return self._orig.write(s)
+        except UnicodeEncodeError:
+            # Console can't encode some chars (rare with cp1252). Strip
+            # offending bytes and keep going so the user still sees
+            # roughly what's happening.
+            safe = s.encode("ascii", errors="replace").decode("ascii")
+            return self._orig.write(safe)
+
+    def flush(self):
+        try:
+            self._log.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._orig.flush()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def isatty(self):
+        return getattr(self._orig, "isatty", lambda: False)()
+
+    def fileno(self):
+        return self._orig.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+
+class _DebugTee:
+    """Install/uninstall a tee on sys.stdout + sys.stderr for the
+    duration of one port run. Writes to
+    `<workspace>/port-<UTC-timestamp>.log` (UTF-8). Subprocess output
+    that we already pipe through Python (e.g. source1import via
+    `HeartbeatPrinter`) gets captured; subprocesses that write raw bytes
+    directly to fd 1/2 are not captured -- those are uncommon in this
+    pipeline."""
+
+    def __init__(self, workspace: Path) -> None:
+        ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        self.log_path = workspace / f"port-{ts}.log"
+        self._fp = None
+        self._orig_stdout = None
+        self._orig_stderr = None
+
+    def install(self) -> None:
+        import sys as _sys
+
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fp = open(self.log_path, "w", encoding="utf-8", errors="replace")
+        self._orig_stdout = _sys.stdout
+        self._orig_stderr = _sys.stderr
+        _sys.stdout = _TeeStream(self._orig_stdout, self._fp)
+        _sys.stderr = _TeeStream(self._orig_stderr, self._fp)
+
+    def uninstall(self) -> None:
+        import sys as _sys
+
+        if self._orig_stdout is not None:
+            _sys.stdout = self._orig_stdout
+        if self._orig_stderr is not None:
+            _sys.stderr = self._orig_stderr
+        if self._fp is not None:
+            try:
+                self._fp.flush()
+                self._fp.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._fp = None
+
+
 def run_port_pipeline(
     url_or_id: str | None,
     addon: str,
@@ -89,6 +182,7 @@ def run_port_pipeline(
     overwrite: bool = False,
     skip_preflight: bool = False,
     create_addon: bool = False,
+    debug: bool = False,
 ) -> int:
     # --auto implies --create-addon: the whole point of --auto is
     # "don't stop to ask me about fixable preconditions."
@@ -113,6 +207,59 @@ def run_port_pipeline(
         workshop_id = parsed
 
     workspace = ensure_dir(Path(cfg.workspace_dir).expanduser() / workshop_id)
+    # --debug: tee stdout+stderr to a per-run log under workspace/.
+    # Installed early so even early-stage errors land in the log.
+    _debug_tee = _DebugTee(workspace) if debug else None
+    if _debug_tee is not None:
+        _debug_tee.install()
+        info(f"--debug: mirroring stdout+stderr to {_debug_tee.log_path}")
+    try:
+        return _run_port_pipeline_body(
+            cfg=cfg,
+            workshop_id=workshop_id,
+            workspace=workspace,
+            addon=addon,
+            auto=auto,
+            skip_import=skip_import,
+            local_bsp=local_bsp,
+            use_bsp=use_bsp,
+            no_merge_instances=no_merge_instances,
+            skip_deps=skip_deps,
+            dry_run=dry_run,
+            export_images=export_images,
+            auto_addoninfo=auto_addoninfo,
+            resume=resume,
+            restart=restart,
+            overwrite=overwrite,
+            skip_preflight=skip_preflight,
+            create_addon=create_addon,
+        )
+    finally:
+        if _debug_tee is not None:
+            _debug_tee.uninstall()
+
+
+def _run_port_pipeline_body(
+    *,
+    cfg: Config,
+    workshop_id: str,
+    workspace: Path,
+    addon: str,
+    auto: bool,
+    skip_import: bool,
+    local_bsp: Path | None,
+    use_bsp: bool,
+    no_merge_instances: bool,
+    skip_deps: bool,
+    dry_run: bool,
+    export_images: str | None,
+    auto_addoninfo: bool,
+    resume: bool,
+    restart: bool,
+    overwrite: bool,
+    skip_preflight: bool,
+    create_addon: bool,
+) -> int:
     manifest_path = workspace / "manifest.json"
     if not restart and manifest_path.exists():
         try:

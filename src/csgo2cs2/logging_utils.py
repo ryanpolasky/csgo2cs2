@@ -69,11 +69,28 @@ def debug(msg: str) -> None:
         print(_c(Style.DIM, f"[debug] {msg}"))
 
 
+# Pick a rule character that the active stdout codec can actually
+# encode. Windows cmd.exe under cp1252 (which is also Python's default
+# when stdout is a pipe/file on Windows) can't encode U+2500, so we
+# silently fall back to '-' there to avoid a UnicodeEncodeError that
+# would crash the whole CLI on first `header()` call.
+def _rule_char() -> str:
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        "\u2500".encode(enc)
+    except (UnicodeEncodeError, LookupError):
+        return "-"
+    return "\u2500"
+
+
+_RULE_CHAR = _rule_char()
+
+
 # section header. emits a blank line + rule + title + rule. wider than
 # the old `== title ==` so longer step names like "Step 5/5: Analyze and
 # fix VMF" don't look cramped.
 def header(msg: str) -> None:
-    rule = "─" * max(8, min(60, len(msg) + 8))
+    rule = _RULE_CHAR * max(8, min(60, len(msg) + 8))
     print()
     print(_c(Style.BRIGHT, rule))
     print(_c(Style.BRIGHT, f"  {msg}"))

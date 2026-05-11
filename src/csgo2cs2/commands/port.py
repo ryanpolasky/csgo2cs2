@@ -121,6 +121,19 @@ def register(subparsers) -> None:
             "Equivalent to setting CSGO2CS2_SKIP_PREFLIGHT=1."
         ),
     )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "Mirror all stdout/stderr from this port run to a timestamped "
+            "log file under `<workspace>/<workshop_id>/port-<timestamp>.log` "
+            "(or `<workspace>/local-<bsp_stem>/...` for --bsp). Console "
+            "output is unchanged; the log captures the same text. Useful "
+            "for debugging crashes or sharing a full transcript without "
+            "having to pipe through findstr/tee (which can trip Windows "
+            "cp1252 encoding errors)."
+        ),
+    )
     p.set_defaults(func=run)
 
 
@@ -146,6 +159,7 @@ def run(args: argparse.Namespace) -> int:
             overwrite=args.overwrite,
             skip_preflight=args.skip_preflight,
             create_addon=args.create_addon,
+            debug=args.debug,
         )
     except WindowsRequiredError as exc:
         if args.skip_import:
