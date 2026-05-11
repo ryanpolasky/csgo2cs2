@@ -820,18 +820,35 @@ def _derive_mapname(bsp: Path) -> str:
 
 
 def _ensure_addon_scaffold(cfg: Config, addon: str) -> None:
-    """Idempotent: scaffold the addon dir iff it's missing. If it exists
-    (whether from Workshop Tools, a previous port, or our scaffold), do
-    nothing -- the importer will use whatever's there."""
-    from .tools.addon_scaffold import addon_dir
-    from .tools.addon_scaffold import create as scaffold_create
+    """Idempotent: scaffold the addon dir iff it's missing, then heal
+    gameinfo.gi if an older scaffold or a hand-made addon dir is missing
+    it. Without gameinfo.gi the addon is isolated (no csgo_imported /
+    csgo_core mounting), so resourcecompiler can't find any base CSGO
+    asset and every wall/floor/model renders as missing -- see
+    `addon_scaffold._GAMEINFO_TEMPLATE` for the why."""
+    from .tools.addon_scaffold import (
+        addon_dir,
+        ensure_gameinfo,
+    )
+    from .tools.addon_scaffold import (
+        create as scaffold_create,
+    )
 
     target = addon_dir(cfg, addon)
-    if target is None or target.exists():
+    if target is None:
         return
-    info(f"Scaffolding addon dir at {target}...")
-    scaffold_create(cfg, addon)
-    success(f"Created {target} (addoninfo.gi + maps/).")
+    if not target.exists():
+        info(f"Scaffolding addon dir at {target}...")
+        scaffold_create(cfg, addon)
+        success(f"Created {target} (addoninfo.gi + gameinfo.gi + maps/).")
+        return
+    healed = ensure_gameinfo(cfg, addon)
+    if healed:
+        rels = ", ".join(str(p) for p in healed)
+        info(
+            f"Wrote missing gameinfo.gi: {rels} (without this the addon "
+            "can't resolve base CSGO assets at build time)."
+        )
 
 
 def _content_addon_maps_dir(cfg: Config, addon: str) -> Path | None:
@@ -896,7 +913,7 @@ def _write_prefab_refs_from_staged(
     cfg: Config,
     addon: str,
     mapname: str,
-    staged_root: Optional[Path] = None,
+    staged_root: Path | None = None,
 ) -> int:
     """Generate the `<map>_prefab_refs.txt` Keller's import wrapper reads
     after the initial source1import pass. The wrapper walks this file to

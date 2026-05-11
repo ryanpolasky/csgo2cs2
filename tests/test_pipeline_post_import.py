@@ -10,12 +10,12 @@ from __future__ import annotations
 from csgo2cs2.config import Config
 from csgo2cs2.pipeline import (
     _CONTENTDIR_MARKER,
-    _patch_importer_contentdir,
     _collect_staged_refs,
     _content_addon_maps_dir,
     _ensure_prefab_refs_stub,
     _format_refs_kv,
     _importer_logged_successful_import,
+    _patch_importer_contentdir,
     _write_prefab_refs_from_staged,
 )
 
