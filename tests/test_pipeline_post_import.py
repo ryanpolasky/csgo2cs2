@@ -15,7 +15,9 @@ from csgo2cs2.pipeline import (
     _ensure_prefab_refs_stub,
     _format_refs_kv,
     _importer_logged_successful_import,
-    _patch_importer_contentdir,
+    _mirror_into_csgo,
+    _unmirror_from_csgo,
+    _unpatch_importer_contentdir,
     _write_prefab_refs_from_staged,
 )
 
@@ -213,35 +215,123 @@ def test_importer_success_marker_empty_input():
     assert _importer_logged_successful_import(None) is False  # type: ignore[arg-type]
 
 
-def test_patch_importer_contentdir_applies(tmp_path):
+def test_unpatch_importer_contentdir_reverts_old_injection(tmp_path):
+    # an older csgo2cs2 patched the script -- verify we restore it.
     script = tmp_path / "import_map_community.py"
     script.write_text(
-        '#!/usr/bin/env python3\n'
+        "#!/usr/bin/env python3\n"
+        'importRefsCmd = "source1import -retail -nop4 -nop4sync '
+        '-src1gameinfodir \\"%s\\" -src1contentdir \\"%s\\" -s2addon %s -game csgo '
+        '-usefilelist \\"%s\\"" % ( s1gamecsgo, s1contentcsgo, s2addon, temp_refs )\n'
+        'importcmd = "source1import -retail -nop4 -nop4sync '
+        '-src1gameinfodir \\"" + s1gamecsgo + "\\" -src1contentdir \\"" '
+        '+ s1contentcsgo + "\\" -s2addon " '
+        '+ s2addon + " -game csgo -usefilelist \\"" + refsFile + "\\""\n'
+        f"\n{_CONTENTDIR_MARKER}\n",
+        encoding="utf-8",
+    )
+    assert _unpatch_importer_contentdir(script) is True
+    text = script.read_text()
+    assert _CONTENTDIR_MARKER not in text
+    assert "-src1contentdir" not in text
+    assert (
         'importRefsCmd = "source1import -retail -nop4 -nop4sync '
         '-src1gameinfodir \\"%s\\" -s2addon %s -game csgo '
-        '-usefilelist \\"%s\\"" % ( s1gamecsgo, s2addon, temp_refs )\n'
-        'importcmd = "source1import -retail -nop4 -nop4sync '
-        '-src1gameinfodir \\"" + s1gamecsgo + "\\" -s2addon " '
-        '+ s2addon + " -game csgo -usefilelist \\"" + refsFile + "\\""'
-        '\n',
-        encoding="utf-8",
-    )
-    assert _patch_importer_contentdir(script) is True
-    text = script.read_text()
-    assert "s1contentcsgo" in text
-    assert _CONTENTDIR_MARKER in text
+        '-usefilelist \\"%s\\"" % ( s1gamecsgo, s2addon, temp_refs )'
+    ) in text
 
 
-def test_patch_importer_contentdir_idempotent(tmp_path):
+def test_unpatch_importer_contentdir_noop_on_pristine(tmp_path):
+    # pristine Keller script has no marker; unpatch is a no-op.
     script = tmp_path / "import_map_community.py"
-    script.write_text(
-        f'already patched\n{_CONTENTDIR_MARKER}\n',
-        encoding="utf-8",
-    )
-    assert _patch_importer_contentdir(script) is False
+    script.write_text("# pristine\n", encoding="utf-8")
+    assert _unpatch_importer_contentdir(script) is False
 
 
-def test_patch_importer_contentdir_unrecognised_baseline(tmp_path):
+def test_unpatch_importer_contentdir_idempotent(tmp_path):
+    # unpatching an already-unpatched script is a no-op.
     script = tmp_path / "import_map_community.py"
-    script.write_text("# unknown version\n", encoding="utf-8")
-    assert _patch_importer_contentdir(script) is False
+    script.write_text("# already reverted, no marker\n", encoding="utf-8")
+    assert _unpatch_importer_contentdir(script) is False
+
+
+def test_mirror_into_csgo_copies_materials_and_models(tmp_path):
+    staged = tmp_path / "staged"
+    (staged / "materials" / "recoil_master").mkdir(parents=True)
+    (staged / "materials" / "recoil_master" / "icon.vmt").write_text("vmt")
+    (staged / "materials" / "recoil_master" / "icon.vtf").write_bytes(b"\x00\x01")
+    (staged / "models" / "props" / "recoil_master").mkdir(parents=True)
+    (staged / "models" / "props" / "recoil_master" / "p.mdl").write_bytes(b"\x00")
+
+    csgo = tmp_path / "csgo"
+    csgo.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    n = _mirror_into_csgo(staged, csgo, workspace)
+    assert n == 3
+    assert (csgo / "materials" / "recoil_master" / "icon.vmt").is_file()
+    assert (csgo / "materials" / "recoil_master" / "icon.vtf").is_file()
+    assert (csgo / "models" / "props" / "recoil_master" / "p.mdl").is_file()
+
+    manifest = workspace / ".csgo_mirror_manifest"
+    assert manifest.is_file()
+    lines = manifest.read_text().splitlines()
+    assert len(lines) == 3
+
+
+def test_mirror_into_csgo_preserves_existing_base_files(tmp_path):
+    # csgo/materials/concrete/ already exists (base CSGO content). The
+    # mirror must NOT overwrite it even if staged has a same-path file.
+    staged = tmp_path / "staged"
+    (staged / "materials" / "concrete").mkdir(parents=True)
+    (staged / "materials" / "concrete" / "wall.vmt").write_text("workshop tampered")
+
+    csgo = tmp_path / "csgo"
+    (csgo / "materials" / "concrete").mkdir(parents=True)
+    (csgo / "materials" / "concrete" / "wall.vmt").write_text("base")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    n = _mirror_into_csgo(staged, csgo, workspace)
+    assert n == 0
+    assert (csgo / "materials" / "concrete" / "wall.vmt").read_text() == "base"
+
+
+def test_mirror_into_csgo_handles_missing_subdirs(tmp_path):
+    staged = tmp_path / "staged"
+    staged.mkdir()  # no materials/ or models/ inside
+    csgo = tmp_path / "csgo"
+    csgo.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    assert _mirror_into_csgo(staged, csgo, workspace) == 0
+
+
+def test_unmirror_from_csgo_removes_only_mirrored_files(tmp_path):
+    staged = tmp_path / "staged"
+    (staged / "materials" / "recoil_master").mkdir(parents=True)
+    (staged / "materials" / "recoil_master" / "icon.vmt").write_text("vmt")
+
+    csgo = tmp_path / "csgo"
+    # pre-existing base file that the mirror should not touch.
+    (csgo / "materials" / "concrete").mkdir(parents=True)
+    (csgo / "materials" / "concrete" / "base.vmt").write_text("base")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    _mirror_into_csgo(staged, csgo, workspace)
+    assert (csgo / "materials" / "recoil_master" / "icon.vmt").is_file()
+
+    removed = _unmirror_from_csgo(workspace)
+    assert removed == 1
+    assert not (csgo / "materials" / "recoil_master" / "icon.vmt").exists()
+    # parent recoil_master/ dir should be cleaned up too (best-effort).
+    assert not (csgo / "materials" / "recoil_master").exists()
+    # the base file must remain.
+    assert (csgo / "materials" / "concrete" / "base.vmt").is_file()
+    assert not (workspace / ".csgo_mirror_manifest").exists()
+
+
+def test_unmirror_from_csgo_noop_when_no_manifest(tmp_path):
+    assert _unmirror_from_csgo(tmp_path) == 0

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..config import load_config
 from ..logging_utils import error, header, info, success, warn
+from ..pipeline import _CSGO_MIRROR_MANIFEST, _unmirror_from_csgo
 from ..utils.backup import backup_path_for, restore_file
 from ..utils.manifest import PortManifest
 from ..utils.url import parse_workshop_id
@@ -112,6 +113,27 @@ def run(args: argparse.Namespace) -> int:
             else:
                 error(f"failed to restore {path}")
                 issues += 1
+
+    header("Mirrored CS:GO content")
+    mirror_manifest = workspace / _CSGO_MIRROR_MANIFEST
+    if not mirror_manifest.exists():
+        info("(none recorded)")
+    else:
+        n_lines = sum(
+            1 for line in mirror_manifest.read_text(encoding="utf-8").splitlines() if line.strip()
+        )
+        if args.dry_run:
+            info(
+                f"[dry-run] would remove {n_lines} mirrored file(s) listed in " f"{mirror_manifest}"
+            )
+        else:
+            removed = _unmirror_from_csgo(workspace)
+            if removed:
+                success(
+                    f"removed {removed} mirrored file(s) from CS:GO csgo/ " f"({n_lines} recorded)."
+                )
+            else:
+                warn("mirror manifest existed but no files were removable.")
 
     header("Summary")
     if issues:

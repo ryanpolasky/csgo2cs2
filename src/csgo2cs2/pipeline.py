@@ -974,19 +974,26 @@ def _ensure_prefab_refs_stub(cfg: Config, addon: str, mapname: str) -> None:
     _write_prefab_refs_from_staged(cfg, addon, mapname, staged_root=None)
 
 
-
 # -- Keller script content-dir fix ------------------------------------------
-# import_map_community.py's second/third source1import invocations
-# (`-usefilelist`) omit `-src1contentdir`, so source1import can't find
-# custom workshop .vmt/.mdl files under staged/.  Only the FIRST pass
-# (VMF import) includes it.  Without this patch every "materials/
-# recoil_master/*.vmt" ref fails with "Found no files matching
-# specification" and the per-asset conversion phase no-ops.
+# Earlier iterations injected `-src1contentdir <staged>` into Keller's
+# `-usefilelist` invocations on the theory that source1import wouldn't
+# find the staged .vmts otherwise. That theory was wrong: source1import
+# DOES find the file via the import-content search path, but its
+# CONVERSION step then looks up dependencies (proxy shaders, parent .vmt
+# refs, .tga/.vtf fallbacks) on the import-GAME path (the CS:GO mod
+# dir). With `-src1contentdir` pointing at staged/, the file is found
+# but conversion fails silently with `*** Error Importing`.
 #
-# We detect and patch this at import-time rather than at doctor-fix time
-# because (a) the Keller script may be re-downloaded / overwritten by
-# Steam updates, and (b) the fix is a two-line text replacement that's
-# safe to re-apply any number of times.
+# Per Valve's official import-tool docs[1], custom .vmt/.vtf/.mdl files
+# must live under `<csgo_install>/csgo/materials/...` and
+# `<csgo_install>/csgo/models/...`. We mirror staged content into the
+# CS:GO tree before invoking source1import (see _mirror_into_csgo) and
+# leave Keller's script unpatched.
+#
+# We also actively REVERT the old patch if a previous run of csgo2cs2
+# applied it, so the user doesn't have to `tools install` to recover.
+#
+# [1]: https://developer.valvesoftware.com/wiki/Source_2/Docs/Level_Design/Import_Tool_Documentation
 
 _CONTENTDIR_MARKER = "# csgo2cs2: patched -src1contentdir into -usefilelist"
 
@@ -1014,35 +1021,127 @@ _KELLER_USEFILELIST_REFS_FIXED = (
 )
 
 
-def _patch_importer_contentdir(script_path: Path) -> bool:
-    """Patch import_map_community.py to add -src1contentdir to the
-    -usefilelist invocations.  Returns True if patched, False if already
-    patched or if the script doesn't match the expected baseline."""
+def _unpatch_importer_contentdir(script_path: Path) -> bool:
+    """Reverse an old (incorrect) `-src1contentdir` injection if a
+    previous csgo2cs2 run left the marker. No-op if the script is
+    already pristine. Idempotent. Returns True iff we changed anything.
+
+    The mirror-into-csgo approach (see _mirror_into_csgo) is the real
+    fix; this function exists to heal scripts patched by older builds.
+    """
     try:
         text = script_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    if _CONTENTDIR_MARKER in text:
-        return False  # already patched
+    if _CONTENTDIR_MARKER not in text:
+        return False
     changed = False
-    if _KELLER_USEFILELIST_MDLS in text:
-        text = text.replace(
-            _KELLER_USEFILELIST_MDLS, _KELLER_USEFILELIST_MDLS_FIXED
-        )
+    if _KELLER_USEFILELIST_MDLS_FIXED in text:
+        text = text.replace(_KELLER_USEFILELIST_MDLS_FIXED, _KELLER_USEFILELIST_MDLS)
         changed = True
-    if _KELLER_USEFILELIST_REFS in text:
-        text = text.replace(
-            _KELLER_USEFILELIST_REFS, _KELLER_USEFILELIST_REFS_FIXED
-        )
+    if _KELLER_USEFILELIST_REFS_FIXED in text:
+        text = text.replace(_KELLER_USEFILELIST_REFS_FIXED, _KELLER_USEFILELIST_REFS)
         changed = True
+    # Strip the trailing marker line (with or without a leading newline).
+    text = text.replace(f"\n{_CONTENTDIR_MARKER}\n", "")
+    text = text.replace(f"{_CONTENTDIR_MARKER}\n", "")
+    text = text.replace(_CONTENTDIR_MARKER, "")
     if not changed:
         return False
-    text += f"\n{_CONTENTDIR_MARKER}\n"
     try:
         script_path.write_text(text, encoding="utf-8")
     except OSError:
         return False
     return True
+
+
+# -- mirror staged content into CS:GO csgo/ ---------------------------------
+# Valve's source1import looks for custom .vmt/.vtf/.mdl files under the
+# `-src1gameinfodir` (== `<csgo_install>/csgo/`), not under a separate
+# `-src1contentdir`. Without mirroring, every workshop .vmt is rejected
+# with `*** Error Importing` and no per-file detail.
+#
+# We refuse to overwrite anything that already exists in the CS:GO tree
+# (those are the user's base CSGO assets) and record the list of newly
+# created files to a manifest so cleanup can target only files we wrote.
+
+_CSGO_MIRROR_SUBDIRS = ("materials", "models")
+_CSGO_MIRROR_MANIFEST = ".csgo_mirror_manifest"
+
+
+def _mirror_into_csgo(
+    staged_root: Path,
+    s1_gameinfo_dir: Path,
+    workspace: Path,
+) -> int:
+    """Mirror `<staged>/materials` and `<staged>/models` into the user's
+    `<csgo>/materials` and `<csgo>/models` trees so source1import can
+    find them. Per Valve's import-tool docs, this is where the importer
+    expects pre-compiled custom content (vmt/vtf/mdl) to live.
+
+    Skips files that already exist on the target side (preserves base
+    CSGO content). Records newly-written paths to
+    `<workspace>/.csgo_mirror_manifest` so a later `unmirror` pass can
+    roll back just the files we created.
+    """
+    if not staged_root.is_dir() or not s1_gameinfo_dir.is_dir():
+        return 0
+    manifest_path = workspace / _CSGO_MIRROR_MANIFEST
+    new_files: list[str] = []
+    for sub in _CSGO_MIRROR_SUBDIRS:
+        src_root = staged_root / sub
+        if not src_root.is_dir():
+            continue
+        dst_root = s1_gameinfo_dir / sub
+        for item in src_root.rglob("*"):
+            if not item.is_file():
+                continue
+            rel = item.relative_to(src_root)
+            target = dst_root / rel
+            if target.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, target)
+            new_files.append(str(target))
+    if new_files:
+        manifest_path.write_text("\n".join(new_files) + "\n", encoding="utf-8")
+    return len(new_files)
+
+
+def _unmirror_from_csgo(workspace: Path) -> int:
+    """Remove files written by an earlier `_mirror_into_csgo` call,
+    using the manifest under `<workspace>/.csgo_mirror_manifest`. Does
+    NOT touch any other files in the CS:GO tree. Best-effort cleanup of
+    now-empty parent dirs. Idempotent."""
+    manifest_path = workspace / _CSGO_MIRROR_MANIFEST
+    if not manifest_path.is_file():
+        return 0
+    try:
+        raw = manifest_path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    paths = [Path(line.strip()) for line in raw.splitlines() if line.strip()]
+    removed = 0
+    for p in paths:
+        try:
+            if p.is_file():
+                p.unlink()
+                removed += 1
+        except OSError:
+            continue
+    # Walk parent dirs bottom-up and remove now-empty ones.
+    parents = sorted({p.parent for p in paths}, key=lambda d: -len(d.parts))
+    for parent in parents:
+        try:
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            continue
+    try:
+        manifest_path.unlink()
+    except OSError:
+        pass
+    return removed
 
 
 def _stage_and_import(
@@ -1081,10 +1180,10 @@ def _stage_and_import(
             "to fetch a known-good copy, or set `import_script_path` in config."
         )
         return 1
-    if _patch_importer_contentdir(resolved):
+    if _unpatch_importer_contentdir(resolved):
         info(
-            "Patched import_map_community.py: added -src1contentdir "
-            "to -usefilelist invocations (fixes workshop texture import)."
+            "Reverted stale -src1contentdir injection in "
+            "import_map_community.py from an older csgo2cs2 build."
         )
 
     mapname = _derive_mapname(bsp)
@@ -1107,6 +1206,21 @@ def _stage_and_import(
     renamed = _rename_csgo_subdirs(s1_content_dir)
     if renamed:
         info(f"Renamed `csgo/` -> `csgo_legacy/` under {renamed} staged content bucket(s).")
+
+    # Per Valve's import-tool docs, source1import expects custom
+    # vmt/vtf/mdl content to live under `<csgo_install>/csgo/materials/`
+    # and `<csgo_install>/csgo/models/`. Without mirroring staged content
+    # there, every workshop .vmt is silently rejected during the
+    # per-asset conversion phase. We refuse to overwrite anything that
+    # already exists in CS:GO csgo/ (those are the user's base assets)
+    # and record what we wrote so `csgo2cs2 cleanup-mirror` can roll it
+    # back later without touching base content.
+    mirrored = _mirror_into_csgo(s1_content_dir, s1_gameinfo_dir, workspace)
+    if mirrored:
+        success(
+            f"Mirrored {mirrored} workshop asset(s) into "
+            f"{s1_gameinfo_dir} for source1import to find."
+        )
 
     # Make sure the target addon dir exists. Valve's importer hangs
     # silently if the dir is missing -- creating an empty WT-style
@@ -1200,9 +1314,7 @@ def _stage_and_import(
                 "The .vmap is written; re-run `csgo2cs2 launch` (or open the "
                 "addon in CS2 Workshop Tools) to compile and load it."
             )
-            success(
-                f"Import completed for `{mapname}` (post-process warnings ignored)."
-            )
+            success(f"Import completed for `{mapname}` (post-process warnings ignored).")
             return 0
         warn(f"Importer exited with code {result.returncode}")
         # stdout/stderr were already streamed in real time; no need to
@@ -1226,4 +1338,3 @@ _IMPORTER_OK_RE = re.compile(
 
 def _importer_logged_successful_import(text: str) -> bool:
     return bool(_IMPORTER_OK_RE.search(text or ""))
-

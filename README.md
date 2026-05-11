@@ -323,6 +323,24 @@ importer. It is a no-op when `extracted/` is empty and skips files that
 already exist at the same size, so re-running `port` on a workspace is
 cheap.
 
+## CS:GO csgo/ mirror
+
+Per Valve's [Import Tool docs][import-tool-docs], `source1import` looks
+for custom precompiled content (`.vmt`, `.vtf`, `.mdl`) under
+`<csgo_install>/csgo/materials/` and `<csgo_install>/csgo/models/` — NOT
+under a separate `-src1contentdir`. Without mirroring, every workshop
+`.vmt` gets `*** Error Importing` with no per-file detail during the
+per-asset conversion phase, leaving the map with checkerboard textures.
+
+After pakfile pre-copy, `csgo2cs2 port` mirrors staged `materials/` and
+`models/` into the user's CS:GO install. It refuses to overwrite anything
+that already exists there (so base CSGO assets are safe) and records
+every file it writes to `<workspace>/.csgo_mirror_manifest`. `csgo2cs2
+cleanup <id>` reads that manifest and removes exactly those files plus
+any parent dirs that become empty — base CSGO content is never touched.
+
+[import-tool-docs]: https://developer.valvesoftware.com/wiki/Source_2/Docs/Level_Design/Import_Tool_Documentation
+
 ## Post-port helpers
 
 After the import succeeds, the workflow tail is `verify`, `launch`, and
