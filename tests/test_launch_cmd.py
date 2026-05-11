@@ -308,6 +308,62 @@ def test_launch_hammer_mode_succeeds_with_only_source_vmap(tmp_path, capsys) -> 
     assert "-tools" in out
 
 
+def test_positional_map_arg_is_accepted(tmp_path, capsys) -> None:
+    """`csgo2cs2 launch <addon> <map>` should work (alias for --map)."""
+    install, bin64, _, _ = _fake_install_with_content(
+        tmp_path, "test_port_01", game_vmap_c=["aim_a", "aim_b"]
+    )
+    cfg = Config(cs2_bin_path=str(bin64))
+    cfg_path = tmp_path / "cfg.json"
+    save_config(cfg, str(cfg_path))
+    parser = build_parser()
+    args = _ns_for_launch(parser, "test_port_01", "aim_b", "--print-only")
+    args.config = str(cfg_path)
+    rc = args.func(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "+map" in out
+    assert "aim_b" in out  # the explicit positional wins over autodetect
+
+
+def test_dash_dash_map_overrides_positional(tmp_path, capsys) -> None:
+    """If both forms are given, --map wins."""
+    install, bin64, _, _ = _fake_install_with_content(
+        tmp_path, "test_port_01", game_vmap_c=["aim_a", "aim_b"]
+    )
+    cfg = Config(cs2_bin_path=str(bin64))
+    cfg_path = tmp_path / "cfg.json"
+    save_config(cfg, str(cfg_path))
+    parser = build_parser()
+    args = _ns_for_launch(
+        parser, "test_port_01", "aim_a", "--map", "aim_b", "--print-only"
+    )
+    args.config = str(cfg_path)
+    rc = args.func(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "aim_b" in out
+
+
+def test_hammer_mode_emits_open_path_hint(tmp_path, capsys) -> None:
+    """Hammer can't auto-load maps from the CLI, so launch surfaces
+    the exact .vmap path the user needs to File -> Open in Hammer."""
+    install, bin64, _, _ = _fake_install_with_content(
+        tmp_path, "test_port_01", content_vmap=["recoil_master"]
+    )
+    cfg = Config(cs2_bin_path=str(bin64))
+    cfg_path = tmp_path / "cfg.json"
+    save_config(cfg, str(cfg_path))
+    parser = build_parser()
+    args = _ns_for_launch(parser, "test_port_01", "--hammer", "--print-only")
+    args.config = str(cfg_path)
+    rc = args.func(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "recoil_master.vmap" in out
+    assert "File -> Open" in out or "File -> open" in out.lower()
+
+
 def test_launch_succeeds_when_compiled_vmap_c_present(tmp_path, capsys) -> None:
     install, bin64, _, _ = _fake_install_with_content(
         tmp_path, "test_port_01", game_vmap_c=["recoil_master"]

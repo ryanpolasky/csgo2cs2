@@ -24,6 +24,14 @@ def register(subparsers) -> None:
         help="Open Counter-Strike 2 with an imported addon active.",
     )
     p.add_argument("addon", help="cs2 addon directory name (under csgo_addons/).")
+    # mapname accepts either form: `launch <addon> <map>` (positional, terser)
+    # or `launch <addon> --map <map>` (kwarg). --map wins if both are given.
+    p.add_argument(
+        "mapname_pos",
+        nargs="?",
+        default=None,
+        help="Map name (positional; default: auto-detect from maps/*.vmap).",
+    )
     p.add_argument(
         "--map",
         dest="mapname",
@@ -183,7 +191,8 @@ def run(args: argparse.Namespace) -> int:
 
     content_addon_dir = resolve_content_addon_dir(cfg, addon)
 
-    mapname = args.mapname
+    # --map wins over positional; positional gives us terser CLI ergonomics.
+    mapname = args.mapname if args.mapname is not None else getattr(args, "mapname_pos", None)
     if mapname is None and not args.hammer:
         detected, alternatives = autodetect_mapname(addon_dir, content_addon_dir)
         if detected is None:
@@ -225,6 +234,23 @@ def run(args: argparse.Namespace) -> int:
     cmd = build_cmdline(exe, addon, mapname, hammer=args.hammer)
     pretty = " ".join(_quote(a) for a in cmd)
     info(f"Launch command: {pretty}")
+
+    # WT can't auto-open a specific .vmap from the CLI (Valve hasn't
+    # exposed it). The launcher comes up on its addons list; users have
+    # to manually navigate. Surface the exact path so it's a copy-paste.
+    if args.hammer and content_addon_dir is not None:
+        candidate_map = mapname
+        if candidate_map is None:
+            detected, _ = autodetect_mapname(addon_dir, content_addon_dir)
+            candidate_map = detected
+        if candidate_map is not None:
+            vmap_path = content_addon_dir / "maps" / f"{candidate_map}.vmap"
+            if vmap_path.is_file():
+                info(
+                    "Workshop Tools doesn't auto-load maps. In Hammer: "
+                    f"File -> Open and select `{vmap_path}`, then "
+                    "Map -> Build Map."
+                )
 
     if args.print_only:
         return 0
