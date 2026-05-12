@@ -114,3 +114,53 @@ def test_debug_tee_uninstall_restores_streams(tmp_path: Path):
     tee.uninstall()
     assert sys.stdout is orig_out
     assert sys.stderr is orig_err
+
+
+def test_collect_custom_skies_basic(tmp_path: Path):
+    """`_collect_custom_skies` scans `extracted/materials/skybox/` for
+    .vmt / .vmat files and returns lower-case basenames PLUS their
+    face-suffix-stripped variants so the analyzer can match a
+    worldspawn `skyname` value even when the BSP pakfile shipped only
+    per-face files (`sky_xyz_up.vmt`, not the canonical `sky_xyz.vmt`)."""
+    from csgo2cs2.pipeline import _collect_custom_skies
+
+    skydir = tmp_path / "materials" / "skybox"
+    skydir.mkdir(parents=True)
+    # snake-case face files (modern CSGO naming)
+    for face in ("up", "dn", "lf", "rt", "ft", "bk"):
+        (skydir / f"sky_mymap_{face}.vmt").write_text("")
+    # plus a fully-resolved combined .vmat
+    (skydir / "sky_already_done.vmat").write_text("")
+
+    out = _collect_custom_skies(tmp_path)
+
+    # combined .vmat -> bare stem
+    assert "sky_already_done" in out
+    # face files round-trip both the raw stem and the canonical form
+    assert "sky_mymap_up" in out
+    assert "sky_mymap" in out
+    # ALL 6 raw stems are present too
+    for face in ("up", "dn", "lf", "rt", "ft", "bk"):
+        assert f"sky_mymap_{face}" in out
+
+
+def test_collect_custom_skies_concat_face_naming(tmp_path: Path):
+    """`sky_dustup.vmt` (no underscore before face suffix) -> canonical
+    `sky_dust`. Older CSGO maps use this naming."""
+    from csgo2cs2.pipeline import _collect_custom_skies
+
+    skydir = tmp_path / "materials" / "skybox"
+    skydir.mkdir(parents=True)
+    for face in ("up", "dn", "lf", "rt", "ft", "bk"):
+        (skydir / f"sky_dust{face}.vmt").write_text("")
+
+    out = _collect_custom_skies(tmp_path)
+    assert "sky_dustup" in out
+    assert "sky_dust" in out
+
+
+def test_collect_custom_skies_no_skybox_dir(tmp_path: Path):
+    """Missing skybox/ dir returns an empty list (no crash)."""
+    from csgo2cs2.pipeline import _collect_custom_skies
+
+    assert _collect_custom_skies(tmp_path) == []

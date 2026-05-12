@@ -145,7 +145,7 @@ world
 {
 \t"id" "1"
 \t"classname" "worldspawn"
-\t"skyname" "sky_csgo_night02"
+\t"skyname" "sky_cs_office"
 }
 entity
 {

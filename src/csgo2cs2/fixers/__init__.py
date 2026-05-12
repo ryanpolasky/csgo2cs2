@@ -2,6 +2,7 @@
 
 from . import (
     asset_paths,  # noqa: F401  (asset_path_backslash fixer)
+    blacklisted_materials,  # noqa: F401  (csgo_blacklisted_materials fixer)
     clip_textures,  # noqa: F401  (texture_clip_custom fixer)
     entities,  # noqa: F401  (entity_unsupported / entity_deprecated_s2 fixer)
     light_environment,  # noqa: F401  (light_environment_count dedupe fixer)

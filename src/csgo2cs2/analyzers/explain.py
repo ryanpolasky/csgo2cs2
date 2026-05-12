@@ -211,6 +211,32 @@ _EXPLANATIONS: Dict[str, Explanation] = {
         ),
         refs=[_REF_KELLER],
     ),
+    "csgo_blacklisted_materials": Explanation(
+        issue_id="csgo_blacklisted_materials",
+        title="Brush refs point at materials source1import explicitly blacklists.",
+        what=(
+            "A handful of CSGO debug / editor materials (dev_hazzardstripe01a, "
+            "reflectivity_90b, editor/gray, tools/locked) are hardcoded into "
+            "source1import's blacklist. They never get converted to .vmat_c, "
+            "so any brush side referencing them renders as the engine's "
+            "missing-texture purple checkerboard in-game and Hammer Build "
+            "complains with `Failed loading resource ... ERROR_FILEOPEN`."
+        ),
+        why=(
+            "The blacklist lives inside the closed-source source1import "
+            "binary; we can't disable it. The only reliable workaround is "
+            "substituting the brush refs at .vmf-time with CS2 stock "
+            "materials that already exist in-engine (no import required)."
+        ),
+        fix=(
+            "auto \u2014 `csgo2cs2 analyze --fix` rewrites each blacklisted "
+            "`\"material\" \"<path>\"` ref to its CS2 stock equivalent: "
+            "`dev/dev_hazzardstripe01a` \u2192 `dev/dev_measuregeneric01b`, "
+            "`tools/locked` \u2192 `tools/toolsnodraw`, etc. The full "
+            "substitution table is in `analyzers.vmf.CSGO_BLACKLISTED_MATERIALS`."
+        ),
+        refs=[],
+    ),
     "asset_path_space": Explanation(
         issue_id="asset_path_space",
         title="Asset path contains a space.",

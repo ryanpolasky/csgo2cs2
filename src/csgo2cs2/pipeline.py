@@ -11,7 +11,7 @@ from pathlib import Path
 from . import fixers  # noqa: F401  (registers fixers on import)
 from .analyzers.bsp import inspect_bsp
 from .analyzers.vmf import analyze_vmf
-from .config import Config, load_config, config_path
+from .config import Config, load_config
 from .extract import extract_bsp_assets
 from .fixers.base import apply_all
 from .logging_utils import error, header, info, success, warn
@@ -208,14 +208,16 @@ def run_port_pipeline(
 
     workspace = ensure_dir(Path(cfg.workspace_dir).expanduser() / workshop_id)
     # --debug: tee stdout+stderr to a per-run log under workspace/.
-    # Installed early so even early-stage errors land in the log.
+    # Installed before the body runs so early-stage errors still land in
+    # the log. The "log saved to X" line is printed AT THE END so it
+    # doesn't get scrolled off-screen by the rest of the port output.
     _debug_tee = _DebugTee(workspace) if debug else None
     if _debug_tee is not None:
         _debug_tee.install()
-        info(f"--debug: mirroring stdout+stderr to {_debug_tee.log_path}")
     try:
-        return _run_port_pipeline_body(
+        rc = _run_port_pipeline_body(
             cfg=cfg,
+            config_path=config_path,
             workshop_id=workshop_id,
             workspace=workspace,
             addon=addon,
@@ -234,6 +236,12 @@ def run_port_pipeline(
             skip_preflight=skip_preflight,
             create_addon=create_addon,
         )
+        if _debug_tee is not None:
+            # Print AFTER the body finishes so this line is the last
+            # thing on the user's screen and they can copy the path
+            # without scrolling back through the whole port output.
+            info(f"--debug: full transcript saved to {_debug_tee.log_path}")
+        return rc
     finally:
         if _debug_tee is not None:
             _debug_tee.uninstall()
@@ -242,6 +250,7 @@ def run_port_pipeline(
 def _run_port_pipeline_body(
     *,
     cfg: Config,
+    config_path: str | None,
     workshop_id: str,
     workspace: Path,
     addon: str,
@@ -468,7 +477,14 @@ def _run_port_pipeline_body(
     stage = "analyze"
     start = _log_stage_start("Analyze and fix VMF", 5)
     manifest.start_stage(stage)
-    vmf = _analyze_and_fix(vmf, cfg, manifest, auto=auto, dry_run=dry_run)
+    vmf = _analyze_and_fix(
+        vmf,
+        cfg,
+        manifest,
+        auto=auto,
+        dry_run=dry_run,
+        extracted_dir=extract_dir,
+    )
     manifest.finish_stage(stage, STAGE_DONE)
     manifest.save(manifest_path)
     _log_stage_end(stage, start)
@@ -758,9 +774,20 @@ def _analyze_and_fix(
     manifest: PortManifest,
     auto: bool,
     dry_run: bool = False,
+    extracted_dir: Path | None = None,
 ) -> Path:
     text = vmf.read_text(encoding="utf-8", errors="ignore")
-    analysis = analyze_vmf(text, default_skybox=cfg.default_skybox)
+    custom_skies = _collect_custom_skies(extracted_dir) if extracted_dir else []
+    if custom_skies:
+        info(
+            f"Detected {len(custom_skies)} map-shipped custom skybox file(s); "
+            "skybox auto-substitution will skip them."
+        )
+    analysis = analyze_vmf(
+        text,
+        default_skybox=cfg.default_skybox,
+        custom_skies=custom_skies,
+    )
 
     if not analysis.findings:
         success("No issues detected; VMF is clean.")
@@ -1178,6 +1205,47 @@ def _collect_staged_refs(staged_root: Path) -> list[str]:
             rel = p.relative_to(staged_root).as_posix()
             refs.append(rel)
     return refs
+
+
+def _collect_custom_skies(extracted_dir: Path) -> list[str]:
+    """Return basenames (no extension) of skybox materials shipped in
+    the BSP pakfile. Detected by scanning `extracted_dir/materials/skybox/`
+    for .vmt / .vmat files. These are author-shipped customs and should
+    NOT be substituted with stock CS2 skies. Returned as lower-case
+    basenames, plus their suffix-stripped variants
+    (`sky_dust_up.vmt` -> {`sky_dust_up`, `sky_dust`}) so the analyzer
+    can match the worldspawn `skyname` value even when it points at
+    a face-less canonical form."""
+    out: set[str] = set()
+    if not extracted_dir.is_dir():
+        return []
+    skyroot = extracted_dir / "materials" / "skybox"
+    if not skyroot.is_dir():
+        return []
+    # Skybox face suffixes used by Source 1 / CSGO. Strip them so the
+    # canonical sky basename matches a worldspawn `"skyname" "sky_xyz"`.
+    face_suffixes = ("up", "dn", "lf", "rt", "ft", "bk")
+    for p in skyroot.rglob("*"):
+        if not p.is_file():
+            continue
+        suffix = p.suffix.lower()
+        if suffix not in (".vmt", ".vmat"):
+            continue
+        stem = p.stem.lower()
+        out.add(stem)
+        # also add stem with face suffix removed:
+        #   sky_dust_up -> sky_dust   (snake-case faces)
+        #   sky_dustup  -> sky_dust   (concat faces)
+        for fs in face_suffixes:
+            if stem.endswith(f"_{fs}") and len(stem) > len(fs) + 1:
+                out.add(stem[: -len(fs) - 1])
+                break
+            if stem.endswith(fs) and len(stem) > len(fs) + 3:  # sky_<x>up
+                base = stem[: -len(fs)]
+                if base.startswith("sky_"):
+                    out.add(base)
+                    break
+    return sorted(out)
 
 
 # `"material" "..."` and `"model" "..."` KV pairs in a .vmf. Material

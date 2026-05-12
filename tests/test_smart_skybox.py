@@ -117,3 +117,50 @@ def test_smart_skybox_records_default_in_finding_context():
     # mood-matched to dust2; default was overridden to overpass on the call.
     assert sky2.context["replacement"] == "sky_de_dust2"
     assert sky2.context["default"] == "sky_de_overpass_01"
+
+
+def test_csgo_sky_dust_is_substituted_not_left_alone():
+    # `sky_dust` is a CSGO-era skyname for the OG de_dust map. It used
+    # to live in LEGACY_UNVERIFIED_SKIES (treated as known-good); now we
+    # treat the wiki list as authoritative and substitute everything not
+    # on it. `sky_dust` -> mood-matched `sky_de_dust2`.
+    text = _wrap_world("sky_dust")
+    a = analyze_vmf(text, default_skybox="sky_cs_office")
+    new_text, results = apply_all(text, a.findings)
+    applied_ids = {r.issue_id for r in results if r.applied}
+    assert "skybox_unknown" in applied_ids
+    assert "sky_de_dust2" in new_text
+    assert '"skyname" "sky_dust"' not in new_text
+
+
+def test_custom_skybox_skips_substitution():
+    # If the BSP pakfile shipped a `materials/skybox/sky_dust*.vmt`,
+    # the map author authored a custom skybox and we must NOT substitute.
+    text = _wrap_world("sky_dust")
+    a = analyze_vmf(
+        text,
+        default_skybox="sky_cs_office",
+        custom_skies=["sky_dust"],
+    )
+    # no skybox_unknown finding because the analyzer treats sky_dust as
+    # author-shipped custom.
+    sky_findings = [
+        f for f in a.findings if f.issue_id in ("skybox_unknown", "skybox_hdr_only")
+    ]
+    assert sky_findings == []
+
+
+def test_custom_skybox_matches_with_face_suffix():
+    # Pipeline scans staged/materials/skybox/ for face files like
+    # `sky_mymap_up.vmt`. The analyzer is given the suffix-stripped form
+    # `sky_mymap` to compare against worldspawn skyname.
+    text = _wrap_world("sky_mymap")
+    a = analyze_vmf(
+        text,
+        default_skybox="sky_cs_office",
+        custom_skies=["sky_mymap_up", "sky_mymap"],
+    )
+    sky_findings = [
+        f for f in a.findings if f.issue_id in ("skybox_unknown", "skybox_hdr_only")
+    ]
+    assert sky_findings == []

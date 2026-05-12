@@ -9,11 +9,12 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Set, Tuple
 
-# wiki-confirmed cs2 skies, as documented at
+# Wiki-confirmed CS2 skies, as documented at
 # https://developer.valvesoftware.com/wiki/Counter-Strike_2_Workshop_Tools/CS2_Sky_List
-# the wiki page is marked WIP so this is the documented subset, not
-# necessarily the entire shipped sky set. each entry is the skybox material
-# (env_sky) name from a shipping cs2 map.
+# Per Ryan / wiki: this is the FULL list of stock CS2 skies (10 entries).
+# Maps using anything else either (a) ship their own custom skybox files
+# (handled via the `custom_skies` set passed to analyze_vmf) or (b) are
+# relying on a CSGO-era sky that doesn't exist in CS2 and must be substituted.
 WIKI_CONFIRMED_CS2_SKIES: Set[str] = {
     "s2_de_inferno_sky01",  # de_inferno (mediterranean / coastal)
     "sky_de_mirage",  # de_mirage (desert / arabian)
@@ -27,27 +28,11 @@ WIKI_CONFIRMED_CS2_SKIES: Set[str] = {
     "sky_de_overpass_01",  # de_overpass (european urban)
 }
 
-# legacy / unverified skies kept in `KNOWN_CS2_SKIES` for backward
-# compatibility with users who configured `cs2_sky_list` against earlier
-# versions of csgo2cs2 (pre-PR5). these names were ported from csgo and
-# may or may not actually exist in cs2; we don't shrink the set so we
-# don't surface false-positive `skybox_unknown` findings on configs that
-# previously passed clean.
-#
-# `sky_day01_01` was the old default_skybox value and is intentionally
-# omitted: it doesn't appear in the wiki sky list nor in any csgo sky
-# manifest we can find. the new default is `sky_cs_office`.
-LEGACY_UNVERIFIED_SKIES: Set[str] = {
-    "sky_csgo_cloudy01",
-    "sky_csgo_night02",
-    "sky_csgo_night02b",
-    "sky_dust",
-    "sky_l4d_rural02_ldr",
-    "sky_lunacy",
-    "sky_urb_alley01",
-    "sky_urb_embassy01",
-    "sky_venice",
-}
+# Legacy CSGO-era skybox names kept around only for explain() messages
+# and for tests that round-trip the pre-PR8 behavior. NOT considered
+# "known CS2 skies" anymore -- analyze_vmf now flags them so the fixer
+# substitutes them with a mood-matched cs2 sky.
+LEGACY_UNVERIFIED_SKIES: Set[str] = set()
 
 # the union is what `analyze` accepts as a "known" sky. if a vmf already
 # names one of these, we don't flag `skybox_unknown`. override via
@@ -85,6 +70,7 @@ SKY_MOOD_RULES: List[Tuple[str, str]] = [
     ("dust2", "sky_de_dust2"),
     ("dust_", "sky_de_dust2"),
     ("dust.", "sky_de_dust2"),
+    ("dust", "sky_de_dust2"),  # bare "dust" / "sky_dust" csgo era -> dust2
     # arabian / mirage-style
     ("mirage", "sky_de_mirage"),
     ("arabia", "sky_de_mirage"),
@@ -248,6 +234,62 @@ _TOOLS_CLIP_PREFIXES = (
     "tools/clip",
 )
 
+# Source1import's hardcoded "removing blacklisted file from import"
+# list. Each entry is the .vmf-style relative material path WITHOUT the
+# leading "materials/" prefix and WITHOUT the .vmt extension (that's
+# how .vmf "material" KV values are stored). Lower-case for cheap
+# case-insensitive comparison.
+CSGO_BLACKLISTED_MATERIALS: Dict[str, str] = {
+    # `dev_hazzardstripe01a` is a high-vis dev-pattern stripe. Replace
+    # with `dev/dev_measuregeneric01b`, a CS2-stock dev grid material
+    # that ships in `core/` and is broadly used as a CSGO->CS2 substitute
+    # for dev geometry markers.
+    "dev/dev_hazzardstripe01a": "dev/dev_measuregeneric01b",
+    # `reflectivity_90b` is a 90% reflective debug material. Map to the
+    # CS2 measuregeneric since CS2 doesn't ship a 1:1 reflectivity debug
+    # material.
+    "dev/reflectivity_90b": "dev/dev_measuregeneric01b",
+    # `editor/gray` is the Hammer "missing material" fallback Valve uses
+    # internally. CS2's `tools/toolsblack` is the closest stable analog.
+    "editor/gray": "tools/toolsblack",
+    # `tools/locked` is the lock icon for blocked brushes. Maps cs2's
+    # `tools/toolsnodraw` (the catch-all hidden brush material) since
+    # nothing user-facing should ever see this texture.
+    "tools/locked": "tools/toolsnodraw",
+}
+
+# Regex that finds every `"material" "<path>"` KV pair. Used by the
+# blacklisted-material analyzer + the asset_paths/blacklisted fixers.
+_MATERIAL_KV_RE = re.compile(
+    r'"material"\s*"([^"\n]+)"',
+    re.IGNORECASE,
+)
+
+
+def _norm_mat(ref: str) -> str:
+    """Normalize a .vmf `material` value to the form used as keys in
+    CSGO_BLACKLISTED_MATERIALS: forward-slash, lower-case, no
+    `materials/` prefix, no `.vmt` suffix."""
+    norm = ref.replace("\\", "/").lower().strip()
+    if norm.startswith("materials/"):
+        norm = norm[len("materials/"):]
+    if norm.endswith(".vmt"):
+        norm = norm[: -len(".vmt")]
+    return norm
+
+
+def _find_blacklisted_material_refs(text: str) -> List[str]:
+    """Return all `material` KV values in `text` that resolve to
+    source1import-blacklisted CSGO base materials. Preserves the
+    original (unnormalized) path so the fixer can do a literal
+    string replace without worrying about case / extension."""
+    hits: List[str] = []
+    for m in _MATERIAL_KV_RE.finditer(text):
+        ref = m.group(1)
+        if _norm_mat(ref) in CSGO_BLACKLISTED_MATERIALS:
+            hits.append(ref)
+    return hits
+
 
 @dataclass
 class Finding:
@@ -317,9 +359,16 @@ def analyze_vmf(
     default_skybox: str = "sky_cs_office",
     cs2_sky_list: Iterable[str] | None = None,
     extra_unsupported_entities: Iterable[str] | None = None,
+    custom_skies: Iterable[str] | None = None,
 ) -> VmfAnalysis:
     analysis = VmfAnalysis()
     skies = set(cs2_sky_list) if cs2_sky_list is not None else KNOWN_CS2_SKIES
+    # Map-authored custom skies (any `materials/skybox/<name>.vmt` /
+    # `.vmat` the BSP pakfile shipped with). These are NOT in the stock
+    # CS2 sky list, but we should NOT substitute them -- they're the
+    # author's intent. Pipeline scans staged content + bsp pakfile and
+    # passes the resolved basenames here.
+    custom = {s.lower() for s in (custom_skies or [])}
     unsupported = set(UNSUPPORTED_ENTITIES) | set(extra_unsupported_entities or [])
 
     # CVMFtoVMAP (the s2 importer's internal s1->s2 vmf converter) bails
@@ -353,7 +402,27 @@ def analyze_vmf(
         skyname = sky_match.group(1)
         analysis.skyname = skyname
         smart = pick_smart_skybox(skyname, default_skybox=default_skybox)
-        if skyname in HDR_ONLY_SKIES:
+        # If the map ships its OWN skybox material (custom skyname authored
+        # by the map maker), leave it alone -- substituting would override
+        # the author's intent. We detect this via the `custom_skies` set
+        # the pipeline builds from staged/materials/skybox/ and the BSP
+        # pakfile contents.
+        skyname_lc = skyname.lower()
+        ships_custom = (
+            skyname_lc in custom
+            or any(
+                cand in custom
+                for cand in (
+                    skyname_lc.rsplit("/", 1)[-1],
+                    f"sky_{skyname_lc}",
+                    skyname_lc.removeprefix("sky_") if skyname_lc.startswith("sky_") else skyname_lc,
+                )
+            )
+        )
+        if ships_custom:
+            # Author shipped a custom skybox -- treat as known good.
+            pass
+        elif skyname in HDR_ONLY_SKIES:
             analysis.findings.append(
                 Finding(
                     issue_id="skybox_hdr_only",
@@ -521,6 +590,34 @@ def analyze_vmf(
     # importer or break case-sensitive filesystems.
     asset_refs = _extract_asset_refs(text)
     analysis.asset_refs = asset_refs
+
+    # CSGO base materials that source1import explicitly BLACKLISTS during
+    # import (debug / editor materials Valve doesn't want re-importable).
+    # Confirmed from real-world port output:
+    #   Removing blacklisted file from import vpk:..:materials/tools/locked.vmt
+    #   Removing blacklisted file from import vpk:..:materials/editor/gray.vmt
+    #   Removing blacklisted file from import vpk:..:materials/dev/reflectivity_90b.vmt
+    #   Removing blacklisted file from import vpk:..:materials/dev/dev_hazzardstripe01a.vmt
+    # The blacklist lives inside the closed-source source1import binary, so
+    # we can't disable it -- instead we substitute every brush-side ref to
+    # a blacklisted material with a CS2 stock equivalent at .vmf time.
+    blacklisted_hits = sorted(set(_find_blacklisted_material_refs(text)))
+    if blacklisted_hits:
+        analysis.findings.append(
+            Finding(
+                issue_id="csgo_blacklisted_materials",
+                severity="warn",
+                message=(
+                    f"{len(blacklisted_hits)} brush ref(s) to source1import-"
+                    "blacklisted CSGO debug material(s) will be substituted "
+                    "with CS2 stock equivalents at fix-time so they don't "
+                    "render as missing-material checkerboards."
+                ),
+                fixable=True,
+                context={"refs": blacklisted_hits},
+            )
+        )
+
     csgo_subfolder_emitted = False
     for ref in asset_refs:
         if " " in ref:

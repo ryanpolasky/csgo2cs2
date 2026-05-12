@@ -96,7 +96,9 @@ def mocked_pipeline(monkeypatch, tmp_path: Path) -> Dict[str, Any]:
         calls["import"].append(kwargs.get("addon"))
         return 0
 
-    def fake_analyze_and_fix(vmf, _cfg, manifest, auto=False, dry_run=False):
+    def fake_analyze_and_fix(
+        vmf, _cfg, manifest, auto=False, dry_run=False, extracted_dir=None
+    ):
         calls["analyze"].append(vmf)
         return vmf
 
