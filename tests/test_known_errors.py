@@ -60,6 +60,34 @@ def test_match_vpk_signature() -> None:
     assert hit.id == "importer_vpk_signature_missing"
 
 
+def test_match_pak01_invalid_signatures_reverted() -> None:
+    # exact form source1import emits when CS2's `vpk.signatures` was
+    # reinstated by a Steam update -- two-line FATAL ERROR followed by
+    # the path and a "Failed to load file (invalid)!" line.
+    text = (
+        "Creating device for graphics adapter 0 'NVIDIA GeForce RTX 3080'\n"
+        "FATAL ERROR: g:\\steamlibrary\\steamapps\\common\\"
+        "counter-strike global offensive\\csgo\\pak01.vpk\n"
+        "Failed to load file (invalid)!\n"
+        "Error running:\n"
+    )
+    hit = known_errors.match_error(text)
+    assert hit is not None
+    assert hit.id == "importer_pak01_invalid_signatures_reverted"
+    # hint should walk the user through the three-step recovery
+    assert "verify integrity" in hit.hint.lower()
+    assert "doctor --fix" in hit.hint
+
+
+def test_match_pak01_invalid_does_not_match_other_invalid() -> None:
+    # 'Failed to load file (invalid)' without 'pak01.vpk' nearby should
+    # NOT match the pak01-specific rule -- it could be a different bug.
+    text = "WARNING: Failed to load file (invalid) somemap.bsp"
+    hit = known_errors.match_error(text)
+    if hit is not None:
+        assert hit.id != "importer_pak01_invalid_signatures_reverted"
+
+
 def test_match_permission_denied() -> None:
     text = "PermissionError: [Errno 13] Permission denied: '/foo'"
     hit = known_errors.match_error(text)

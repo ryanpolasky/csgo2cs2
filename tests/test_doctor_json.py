@@ -82,6 +82,29 @@ def test_doctor_json_fix_records_drift_and_reports(tmp_path: Path, capsys) -> No
     assert drift_state.exists()
 
 
+def test_doctor_json_tools_flags_required_vs_optional(tmp_path: Path, capsys) -> None:
+    """`vpkedit` / `bspzip` are optional accelerators; the report must
+    surface them with `required=False` so consumers can ignore them when
+    they're not configured. SteamCMD + BSPSource stay `required=True`."""
+    cfg_path = _cfg(tmp_path)
+    parser = build_parser()
+    args = parser.parse_args(["doctor", "--json"])
+    args.config = str(cfg_path)
+    args.func(args)
+    payload = json.loads(capsys.readouterr().out)
+    tools = payload["tools"]
+    # required tools are flagged as such
+    assert tools["steamcmd"]["required"] is True
+    assert tools["bspsource"]["required"] is True
+    # optional tools are flagged false so cli consumers can gate on it
+    assert tools["vpkedit"]["required"] is False
+    assert tools["bspzip"]["required"] is False
+    # and missing optional tools never appear in the issue list
+    issues_blob = " ".join(payload["issues"])
+    assert "vpkedit" not in issues_blob.lower()
+    assert "bspzip" not in issues_blob.lower()
+
+
 def test_doctor_json_mutually_exclusive_flags(tmp_path: Path, capsys) -> None:
     cfg_path = _cfg(tmp_path)
     parser = build_parser()

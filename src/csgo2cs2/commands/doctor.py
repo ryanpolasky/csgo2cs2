@@ -150,11 +150,14 @@ def run(args: argparse.Namespace) -> int:
         issues.append("Install a Java JRE and ensure `java` is on PATH")
 
     header("External Tools")
+    # SteamCMD + BSPSource are required by the port pipeline (workshop
+    # downloads + BSP decompile). VPKEdit + BSPZip are optional: extract
+    # uses the built-in pakfile reader by default and never needs to
+    # repack BSPs. Missing-optional cases are info-level so they don't
+    # contribute to the issue count.
     for adapter in (
         SteamCMD(cfg.steamcmd_path),
         BSPSource(cfg.bspsource_path, java_path=cfg.java_path),
-        VPKEdit(cfg.vpkedit_path),
-        BSPZip(cfg.bspzip_path),
     ):
         st = adapter.status()
         if st.installed:
@@ -162,6 +165,16 @@ def run(args: argparse.Namespace) -> int:
         else:
             warn(f"{st.name}: not configured or not found")
             issues.append(f"Set `{st.name}_path` in config or place {st.name} on PATH")
+
+    for adapter in (
+        VPKEdit(cfg.vpkedit_path),
+        BSPZip(cfg.bspzip_path),
+    ):
+        st = adapter.status()
+        if st.installed:
+            success(f"{st.name}: {st.path} (optional)")
+        else:
+            info(f"{st.name}: not configured (optional; not used by the port pipeline)")
 
     header("CS:GO/CS2 Install")
     if cfg.csgo_install_path and Path(cfg.csgo_install_path).exists():
@@ -237,19 +250,34 @@ def _run_json(cfg, do_fix: bool) -> int:
         },
     }
 
-    for adapter in (
+    # SteamCMD + BSPSource are required; missing them contributes to
+    # the issue count. VPKEdit + BSPZip are optional accelerators (the
+    # port pipeline falls back to the built-in pakfile reader) and only
+    # carry a `required` flag in the report.
+    required_adapters = (
         SteamCMD(cfg.steamcmd_path),
         BSPSource(cfg.bspsource_path, java_path=cfg.java_path),
+    )
+    optional_adapters = (
         VPKEdit(cfg.vpkedit_path),
         BSPZip(cfg.bspzip_path),
-    ):
+    )
+    for adapter in required_adapters:
         st = adapter.status()
         report["tools"][st.name] = {
             "installed": st.installed,
             "path": str(st.path) if st.path else None,
+            "required": True,
         }
         if not st.installed:
             issues.append(f"{st.name} not configured/found")
+    for adapter in optional_adapters:
+        st = adapter.status()
+        report["tools"][st.name] = {
+            "installed": st.installed,
+            "path": str(st.path) if st.path else None,
+            "required": False,
+        }
 
     if not report["modules"]["colorama"]:
         issues.append("colorama not installed")

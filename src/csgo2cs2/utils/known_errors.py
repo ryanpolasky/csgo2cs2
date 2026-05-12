@@ -156,6 +156,23 @@ _register(
 )
 
 _register(
+    # source1import emits `FATAL ERROR: <path>\pak01.vpk\nFailed to load
+    # file (invalid)!` when CS2's resource system enforces vpk signatures
+    # on CSGO's pak01.vpk -- which isn't signed by CS2's keys. This
+    # happens when Steam silently re-installs `vpk.signatures` during a
+    # CS2 update, undoing our prior `doctor --fix` rename. The fix is
+    # idempotent: verify CS2 files, re-run `doctor --fix`, retry.
+    "importer_pak01_invalid_signatures_reverted",
+    r"pak01\.vpk[\s\S]{0,200}?Failed to load file\s*\(invalid\)",
+    "source1import refused to open CSGO's pak01.vpk. This almost always "
+    "means Steam re-installed `vpk.signatures` during a CS2 update "
+    "(reverting `doctor --fix`'s rename). Fix: (1) Steam -> CS2 -> "
+    "Properties -> Installed Files -> Verify integrity, then (2) re-run "
+    "`csgo2cs2 doctor --fix`, then (3) retry the port.",
+    tool="importer",
+)
+
+_register(
     "importer_path_with_space",
     r"(invalid\s+option|unexpected\s+argument).*\s",
     "The importer chokes on paths with spaces. Move workspace_dir to a "
