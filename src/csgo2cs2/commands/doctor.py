@@ -24,6 +24,25 @@ from ..utils.steam import find_csgo_install
 
 DECODE_MARKER = ".decode("
 
+# Anchor in `utils/utlc.py` that's brittle on Windows when an extended-key
+# byte (0xe0/0x00 prefix for arrow / function / Page Up/Down keys) is in
+# the console input buffer when getch() runs: the byte isn't valid utf-8
+# and the decode raises. Replaced with a try/except that treats undecodable
+# bytes as Enter so automation isn't killed by a stray keystroke.
+GETCH_BRITTLE = "return msvcrt.getch().decode('utf-8')"
+GETCH_SAFE_MARKER = "except UnicodeDecodeError"
+
+
+def _utlc_candidates(cfg) -> List[Path]:
+    """Candidate paths for the `utils/utlc.py` helper shipped alongside
+    `import_map_community.py`. Same lookup as the importer itself --
+    `utlc.py` lives next to it in `utils/`."""
+    out: List[Path] = []
+    for importer in _importer_candidates(cfg):
+        cand = importer.parent / "utils" / "utlc.py"
+        out.append(cand)
+    return out
+
 
 def _importer_candidates(cfg) -> List[Path]:
     """Candidate paths for `import_map_community.py`, in priority order:
@@ -280,6 +299,16 @@ def _check_install_patches_silent(
             else:
                 issues.append(f"{importer.name} unpatched")
 
+    utlc = next((p for p in _utlc_candidates(cfg) if p.is_file()), None)
+    if utlc:
+        tracked.append(utlc)
+        if _utlc_needs_getch_patch(utlc):
+            if fix:
+                if _patch_utlc_getch(utlc):
+                    fixes_applied.append(f"patched {utlc}")
+            else:
+                issues.append(f"{utlc.name} getch() unpatched")
+
     if cfg.cs2_bin_path:
         sigs = Path(cfg.cs2_bin_path) / "vpk.signatures"
         renamed = sigs.with_suffix(sigs.suffix + ".old")
@@ -299,6 +328,7 @@ def _check_install_patches_silent(
 def _summarize_patches(cfg) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "import_map_community_py": None,
+        "utlc_getch": None,
         "vpk_signatures": None,
     }
     for cand in _importer_candidates(cfg):
@@ -306,6 +336,14 @@ def _summarize_patches(cfg) -> Dict[str, Any]:
             out["import_map_community_py"] = {
                 "path": str(cand),
                 "patched": not has_marker(cand, DECODE_MARKER),
+            }
+            break
+    for cand in _utlc_candidates(cfg):
+        if cand.is_file():
+            text = cand.read_text(encoding="utf-8", errors="ignore")
+            out["utlc_getch"] = {
+                "path": str(cand),
+                "patched": GETCH_SAFE_MARKER in text or GETCH_BRITTLE not in text,
             }
             break
     if cfg.cs2_bin_path:
@@ -363,6 +401,29 @@ def _check_install_patches(
             success(f"{importer.name} already patched (no `.decode(` found)")
     else:
         warn("Could not locate import_map_community.py under known paths")
+
+    # utils/utlc.py getch() UnicodeDecodeError patch
+    utlc = next((p for p in _utlc_candidates(cfg) if p.is_file()), None)
+    if utlc:
+        tracked.append(utlc)
+        if _utlc_needs_getch_patch(utlc):
+            warn(
+                f"{utlc.name} getch() can crash on extended-key bytes "
+                "(arrow / F-keys / Page Up/Down) in the console buffer"
+            )
+            if fix:
+                if _patch_utlc_getch(utlc):
+                    fixes_applied.append(f"patched {utlc}")
+                else:
+                    warn(f"{utlc.name}: getch line layout didn't match; no patch applied")
+            else:
+                issues.append(
+                    f"Run `csgo2cs2 doctor --fix` to harden getch() in {utlc.name}"
+                )
+        else:
+            success(f"{utlc.name} getch() already hardened (UnicodeDecodeError-safe)")
+    else:
+        info("utils/utlc.py not found next to importer; skipping getch hardening check")
 
     # vpk.signatures rename
     if cfg.cs2_bin_path:
@@ -436,6 +497,51 @@ def _patch_remove_decode(path: Path) -> None:
     path.write_text("".join(out_lines), encoding="utf-8")
 
 
+def _utlc_needs_getch_patch(path: Path) -> bool:
+    """True iff utlc.py contains the brittle getch decode AND hasn't
+    already been wrapped in a UnicodeDecodeError-safe try/except."""
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return GETCH_BRITTLE in text and GETCH_SAFE_MARKER not in text
+
+
+def _patch_utlc_getch(path: Path) -> bool:
+    """Wrap the Windows branch of `getch()` in `utils/utlc.py` with a
+    try/except UnicodeDecodeError so a stray extended-key keystroke
+    (arrow keys, F-keys, Page Up/Down) sitting in the console buffer
+    doesn't kill the importer at the `Enter to Continue` prompt.
+    Returns True on success, False on no-op (already patched / line
+    layout doesn't match). The file uses TAB indentation; we mirror it."""
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if GETCH_SAFE_MARKER in text:
+        return False  # already patched
+    # The original line is `\t\t\treturn msvcrt.getch().decode('utf-8')`.
+    # Replace with a try/except that returns '\r' on undecodable bytes
+    # (extended-key prefix), preserving the original tab indentation.
+    old = "\t\t\t" + GETCH_BRITTLE
+    new = (
+        "\t\t\ttry:\n"
+        "\t\t\t\treturn msvcrt.getch().decode('utf-8')\n"
+        "\t\t\texcept UnicodeDecodeError:\n"
+        "\t\t\t\t# extended-key prefix (0xe0/0x00) or other non-utf8\n"
+        "\t\t\t\t# byte in the console buffer -- treat as Enter so\n"
+        "\t\t\t\t# automation isn't killed by a stray keystroke.\n"
+        "\t\t\t\treturn '\\r'"
+    )
+    if old not in text:
+        return False
+    backup_file(path)
+    text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
 # reverse the install-side mutations made by `doctor --fix`. each unfix step is
 # best-effort and idempotent: missing backups / already-restored state are not
 # errors. we want users heading to VAC servers to be able to run this without
@@ -478,7 +584,32 @@ def _run_unfix(cfg) -> int:
                 "either --fix was never run or the backup was deleted"
             )
 
-    # 2. rename vpk.signatures.old -> vpk.signatures, removing any backup.
+    # 2. restore utils/utlc.py from its backup if one exists.
+    utlc_candidates = _utlc_candidates(cfg)
+    utlc = next((p for p in utlc_candidates if p.is_file()), None)
+    if utlc is None:
+        for cand in utlc_candidates:
+            if backup_path_for(cand).exists():
+                utlc = cand
+                break
+    if utlc is None:
+        skipped.append("utlc.py: not found next to importer in any expected location")
+    else:
+        backup = backup_path_for(utlc)
+        if backup.exists():
+            if restore_file(utlc):
+                backup.unlink()
+                success(f"restored {utlc} from backup")
+                reversed_count += 1
+            else:
+                warn(f"failed to restore {utlc} (backup unreadable?)")
+        else:
+            skipped.append(
+                f"{utlc.name}: no backup at {backup.name}; "
+                "either --fix was never run or the backup was deleted"
+            )
+
+    # 3. rename vpk.signatures.old -> vpk.signatures, removing any backup.
     if cfg.cs2_bin_path:
         sigs = Path(cfg.cs2_bin_path) / "vpk.signatures"
         renamed = sigs.with_suffix(sigs.suffix + ".old")

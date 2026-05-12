@@ -118,6 +118,13 @@ class ImportMapTool:
         blocks forever waiting on a TTY that's never going to type back.
         """
         require_windows("import_map_community.py")
+        # Apply the utlc.py getch() utf-8 safety patch in-place before
+        # the subprocess starts. Idempotent + self-heals after a Steam
+        # verify reverts the install. Doctor offers the same fix
+        # explicitly; this catches users who forget to run it.
+        importer = self.resolve()
+        if importer:
+            _ensure_utlc_getch_hardened(importer)
         cmd = self.build_command(
             inputs,
             use_bsp=use_bsp,
@@ -138,6 +145,30 @@ class ImportMapTool:
         return _run_streaming(
             cmd, on_line=on_line, env=env, stdin_input=stdin_input
         )
+
+
+def _ensure_utlc_getch_hardened(importer_path: Path) -> None:
+    """Make sure `utils/utlc.py` next to the importer wraps its
+    Windows getch() decode in a try/except UnicodeDecodeError so a
+    stray extended-key byte (arrow / F-key / Page Up/Down) sitting in
+    the console buffer doesn't kill the importer at startup.
+
+    Idempotent: no-op if already patched or if utlc.py is missing.
+    Lazy-imports the doctor helpers to avoid a cycle (doctor depends
+    on a few other modules and we want this module to stay small)."""
+    from ..commands.doctor import _patch_utlc_getch, _utlc_needs_getch_patch
+
+    utlc = importer_path.parent / "utils" / "utlc.py"
+    if not utlc.is_file():
+        return
+    if not _utlc_needs_getch_patch(utlc):
+        return
+    try:
+        _patch_utlc_getch(utlc)
+    except OSError:
+        # Best-effort. The doctor command will surface this on
+        # `csgo2cs2 doctor` if the user wants to know.
+        return
 
 
 def _env_with_extra_path(

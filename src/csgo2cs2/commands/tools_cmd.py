@@ -28,6 +28,25 @@ from ..utils.tools_registry import (
 ALL_TOOLS = ("bspsource", "steamcmd", "import_map_community")
 
 
+def _harden_utlc_getch(importer_path: Path) -> None:
+    """Apply the `utils/utlc.py` getch() UnicodeDecodeError fix to the
+    freshly-extracted importer if available. Best-effort; failures are
+    logged but don't fail the install. The same patch is also offered
+    by `doctor --fix` so users can re-apply after Steam reverts."""
+    from .doctor import _patch_utlc_getch, _utlc_needs_getch_patch  # avoid cycle
+
+    utlc = importer_path.parent / "utils" / "utlc.py"
+    if not utlc.is_file():
+        return
+    if not _utlc_needs_getch_patch(utlc):
+        return
+    try:
+        if _patch_utlc_getch(utlc):
+            success(f"import_map_community: hardened {utlc.name} getch() for utf-8 safety")
+    except OSError as exc:
+        warn(f"import_map_community: couldn't patch {utlc} ({exc})")
+
+
 def register(subparsers) -> None:
     p = subparsers.add_parser(
         "tools",
@@ -138,7 +157,11 @@ def _install_tool(tool: str, force: bool) -> Tuple[str, Path] | None:
 
     if tool == "import_map_community":
         spec = import_map_community_repo_archive()
-        return _install_archive_tool(tool, spec, cache_root, "import_script_path", force)
+        result = _install_archive_tool(tool, spec, cache_root, "import_script_path", force)
+        if result is not None:
+            _, importer_path = result
+            _harden_utlc_getch(importer_path)
+        return result
 
     warn(f"Don't know how to install {tool}")
     return None
