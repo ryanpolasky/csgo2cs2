@@ -142,9 +142,7 @@ class ImportMapTool:
                 env=env,
                 input=stdin_input,
             )
-        return _run_streaming(
-            cmd, on_line=on_line, env=env, stdin_input=stdin_input
-        )
+        return _run_streaming(cmd, on_line=on_line, env=env, stdin_input=stdin_input)
 
 
 def _ensure_utlc_getch_hardened(importer_path: Path) -> None:
@@ -196,6 +194,7 @@ def _run_streaming(
     a long-running importer feel like it's actually doing something
     -- without it the user stares at a blank line for 3 minutes."""
     if on_line is None:
+
         def _default_on_line(stream: str, line: str) -> None:
             # write to stdout regardless of stream so order is preserved.
             sys.stdout.write(line)
@@ -301,4 +300,3 @@ def _fmt_elapsed(seconds: float) -> str:
         return f"{m}m{s:02d}s"
     h, m = divmod(m, 60)
     return f"{h}h{m:02d}m"
-

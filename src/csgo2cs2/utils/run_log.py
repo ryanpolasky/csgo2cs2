@@ -212,9 +212,7 @@ def is_disabled() -> bool:
 
 
 @contextmanager
-def start_logging(
-    workspace_dir: Path, command: str, *, keep: int = 25
-) -> Iterator[RunLog | None]:
+def start_logging(workspace_dir: Path, command: str, *, keep: int = 25) -> Iterator[RunLog | None]:
     """Open the run log, tee stdout/stderr to it, and yield the handle.
 
     No-ops (yields None) when:

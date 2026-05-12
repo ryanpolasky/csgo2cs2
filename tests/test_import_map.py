@@ -284,4 +284,3 @@ def test_import_map_passes_stdin_input_through_run(tmp_path):
         tool.import_map(_inputs(tmp_path), stdin_input="\n")
 
     assert captured["input"] == "\n"
-

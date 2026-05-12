@@ -38,11 +38,9 @@ entity
 """
 
 # the fully-populated shape Hammer writes. analyzer should be silent on this.
-_COMPLETE = (
-    _MISSING_VIEWSETTINGS.replace(
-        "visgroups\n{\n}\n",
-        "visgroups\n{\n}\nviewsettings\n{\n\t\"bSnapToGrid\" \"1\"\n}\n",
-    )
+_COMPLETE = _MISSING_VIEWSETTINGS.replace(
+    "visgroups\n{\n}\n",
+    'visgroups\n{\n}\nviewsettings\n{\n\t"bSnapToGrid" "1"\n}\n',
 )
 
 
@@ -86,9 +84,7 @@ def test_fixer_adds_missing_block_before_world():
         fixable=True,
         context={"missing": ["viewsettings"]},
     )
-    new_text, applied, detail = fix_vmf_missing_top_level_keys(
-        _MISSING_VIEWSETTINGS, finding
-    )
+    new_text, applied, detail = fix_vmf_missing_top_level_keys(_MISSING_VIEWSETTINGS, finding)
     assert applied is True
     assert "viewsettings" in new_text
     # inserted before world, not after
@@ -120,9 +116,7 @@ def test_analyze_then_fix_roundtrip_yields_compliant_vmf():
     analyzer pass on the patched text emits no missing-keys finding."""
     findings = _findings_by_id(_MISSING_VIEWSETTINGS, "vmf_missing_top_level_keys")
     assert len(findings) == 1
-    patched, applied, _ = fix_vmf_missing_top_level_keys(
-        _MISSING_VIEWSETTINGS, findings[0]
-    )
+    patched, applied, _ = fix_vmf_missing_top_level_keys(_MISSING_VIEWSETTINGS, findings[0])
     assert applied is True
     assert _findings_by_id(patched, "vmf_missing_top_level_keys") == []
 
@@ -152,4 +146,3 @@ entity
     findings = _findings_by_id(raw, "vmf_missing_top_level_keys")
     assert len(findings) == 1
     assert "viewsettings" in findings[0].context["missing"]
-

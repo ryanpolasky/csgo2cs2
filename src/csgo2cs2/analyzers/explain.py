@@ -230,7 +230,7 @@ _EXPLANATIONS: Dict[str, Explanation] = {
         ),
         fix=(
             "auto \u2014 `csgo2cs2 analyze --fix` rewrites each blacklisted "
-            "`\"material\" \"<path>\"` ref to its CS2 stock equivalent: "
+            '`"material" "<path>"` ref to its CS2 stock equivalent: '
             "`dev/dev_hazzardstripe01a` \u2192 `dev/dev_measuregeneric01b`, "
             "`tools/locked` \u2192 `tools/toolsnodraw`, etc. The full "
             "substitution table is in `analyzers.vmf.CSGO_BLACKLISTED_MATERIALS`."
@@ -448,4 +448,3 @@ def render(exp: Explanation) -> str:
         for r in exp.refs:
             lines.append(f"  - {r}")
     return "\n".join(lines)
-

@@ -266,9 +266,7 @@ def _check_addon_dir(
             PreflightIssue(
                 id="addon_missing",
                 severity="error",
-                message=(
-                    f"Addon {addon!r} has not been created at {state.path}."
-                ),
+                message=(f"Addon {addon!r} has not been created at {state.path}."),
                 hint=(
                     f"Run `csgo2cs2 addon create {addon}` to scaffold it, or "
                     "re-run the port with --create-addon (also implied by --auto). "
@@ -529,5 +527,3 @@ def _migrate_drift_state(old_workspace: Path, new_workspace: Path, print_fn) -> 
         # non-fatal -- worst case the user sees the install_patches_not_applied
         # warning and re-runs `csgo2cs2 doctor --fix`.
         print_fn(f"note: could not migrate drift state ({exc}); continuing.")
-
-

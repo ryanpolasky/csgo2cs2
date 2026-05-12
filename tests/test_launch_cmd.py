@@ -207,9 +207,7 @@ def _fake_install_with_content(
 
 
 def test_resolve_content_addon_dir_swaps_game_for_content(tmp_path: Path) -> None:
-    install, bin64, game_addon, content_addon = _fake_install_with_content(
-        tmp_path, "myaddon"
-    )
+    install, bin64, game_addon, content_addon = _fake_install_with_content(tmp_path, "myaddon")
     cfg = Config(cs2_bin_path=str(bin64))
     got = launch_cmd.resolve_content_addon_dir(cfg, "myaddon")
     assert got == content_addon
@@ -335,9 +333,7 @@ def test_dash_dash_map_overrides_positional(tmp_path, capsys) -> None:
     cfg_path = tmp_path / "cfg.json"
     save_config(cfg, str(cfg_path))
     parser = build_parser()
-    args = _ns_for_launch(
-        parser, "test_port_01", "aim_a", "--map", "aim_b", "--print-only"
-    )
+    args = _ns_for_launch(parser, "test_port_01", "aim_a", "--map", "aim_b", "--print-only")
     args.config = str(cfg_path)
     rc = args.func(args)
     assert rc == 0
@@ -379,4 +375,3 @@ def test_launch_succeeds_when_compiled_vmap_c_present(tmp_path, capsys) -> None:
     out = capsys.readouterr().out
     assert "+map" in out
     assert "recoil_master" in out
-

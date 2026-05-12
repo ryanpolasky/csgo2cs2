@@ -272,7 +272,7 @@ def _norm_mat(ref: str) -> str:
     `materials/` prefix, no `.vmt` suffix."""
     norm = ref.replace("\\", "/").lower().strip()
     if norm.startswith("materials/"):
-        norm = norm[len("materials/"):]
+        norm = norm[len("materials/") :]
     if norm.endswith(".vmt"):
         norm = norm[: -len(".vmt")]
     return norm
@@ -408,15 +408,12 @@ def analyze_vmf(
         # the pipeline builds from staged/materials/skybox/ and the BSP
         # pakfile contents.
         skyname_lc = skyname.lower()
-        ships_custom = (
-            skyname_lc in custom
-            or any(
-                cand in custom
-                for cand in (
-                    skyname_lc.rsplit("/", 1)[-1],
-                    f"sky_{skyname_lc}",
-                    skyname_lc.removeprefix("sky_") if skyname_lc.startswith("sky_") else skyname_lc,
-                )
+        ships_custom = skyname_lc in custom or any(
+            cand in custom
+            for cand in (
+                skyname_lc.rsplit("/", 1)[-1],
+                f"sky_{skyname_lc}",
+                skyname_lc.removeprefix("sky_") if skyname_lc.startswith("sky_") else skyname_lc,
             )
         )
         if ships_custom:
@@ -689,4 +686,3 @@ _REBUILD_MESSAGES: Dict[str, str] = {
         "the cs2 import re-bakes brush UVs."
     ),
 }
-

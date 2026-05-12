@@ -121,4 +121,3 @@ def _run_delete(args: argparse.Namespace) -> int:
     shutil.rmtree(d)
     success(f"Deleted {d}.")
     return 0
-

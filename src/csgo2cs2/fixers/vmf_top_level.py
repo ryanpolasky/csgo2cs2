@@ -35,11 +35,7 @@ _DEFAULTS: dict[str, str] = {
         '\t"prefab" "0"\n'
         "}\n"
     ),
-    "visgroups": (
-        "visgroups\n"
-        "{\n"
-        "}\n"
-    ),
+    "visgroups": ("visgroups\n" "{\n" "}\n"),
     "viewsettings": (
         "viewsettings\n"
         "{\n"
@@ -63,9 +59,7 @@ def _top_level_block_present(text: str, name: str) -> bool:
     return re.search(pattern, text) is not None
 
 
-def fix_vmf_missing_top_level_keys(
-    text: str, finding: Finding
-) -> Tuple[str, bool, str]:
+def fix_vmf_missing_top_level_keys(text: str, finding: Finding) -> Tuple[str, bool, str]:
     missing = list(finding.context.get("missing") or [])
     if not missing:
         return text, False, "nothing to add"
@@ -89,4 +83,3 @@ def fix_vmf_missing_top_level_keys(
 
 
 base.register("vmf_missing_top_level_keys", fix_vmf_missing_top_level_keys)
-

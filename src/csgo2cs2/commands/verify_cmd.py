@@ -74,9 +74,7 @@ def _resolve_addon_dir(cfg: Config, addon: str) -> Path | None:
     return resolve_addon_dir(cfg, addon)
 
 
-def _check_vmap(
-    addon_dir: Path, mapname: str | None
-) -> tuple[Path | None, List[VerifyIssue]]:
+def _check_vmap(addon_dir: Path, mapname: str | None) -> tuple[Path | None, List[VerifyIssue]]:
     issues: List[VerifyIssue] = []
     maps_dir = addon_dir / "maps"
     if not maps_dir.is_dir():

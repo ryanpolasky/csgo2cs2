@@ -55,7 +55,7 @@ def fix_csgo_blacklisted_materials(text: str, finding: Finding) -> Tuple[str, bo
         if idx == -1:
             continue
         while idx != -1:
-            text = text[:idx] + replacement + text[idx + len(needle):]
+            text = text[:idx] + replacement + text[idx + len(needle) :]
             replaced_count += 1
             lo_text = text.lower()
             idx = lo_text.find(lo_needle)

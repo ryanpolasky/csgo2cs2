@@ -138,4 +138,3 @@ def test_fixer_dedupe_after_analyze_findings_no_more_dupes():
     new_text, _ = apply_all(text, a.findings)
     a2 = analyze_vmf(new_text)
     assert not any(f.issue_id == "light_environment_count" for f in a2.findings)
-

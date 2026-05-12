@@ -445,9 +445,7 @@ def _check_install_patches(
                 else:
                     warn(f"{utlc.name}: getch line layout didn't match; no patch applied")
             else:
-                issues.append(
-                    f"Run `csgo2cs2 doctor --fix` to harden getch() in {utlc.name}"
-                )
+                issues.append(f"Run `csgo2cs2 doctor --fix` to harden getch() in {utlc.name}")
         else:
             success(f"{utlc.name} getch() already hardened (UnicodeDecodeError-safe)")
     else:
@@ -577,7 +575,9 @@ def _patch_utlc_getch(path: Path) -> bool:
 def _run_unfix(cfg) -> int:
     header("Reversing install patches")
     if not (cfg.csgo_install_path or cfg.import_script_path or cfg.cs2_bin_path):
-        error("Nothing to unfix: csgo_install_path, import_script_path, and cs2_bin_path are all unset.")
+        error(
+            "Nothing to unfix: csgo_install_path, import_script_path, and cs2_bin_path are all unset."
+        )
         return 1
 
     reversed_count = 0

@@ -156,7 +156,6 @@ def test_doctor_drift_silent_when_unchanged(tmp_path: Path, capsys: pytest.Captu
     assert "patch drift detected" not in err
 
 
-
 def test_doctor_fix_patches_cached_importer_via_import_script_path(tmp_path: Path) -> None:
     """Regression: `tools install` writes the importer into the tools
     cache and records it as `cfg.import_script_path`. The port pipeline

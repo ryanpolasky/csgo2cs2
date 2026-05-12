@@ -100,9 +100,7 @@ def test_fixer_substitutes_brush_ref():
 def test_fixer_case_insensitive_match():
     # bspsource sometimes emits "Material" with a capital M. Ensure we
     # still substitute.
-    text = _wrap_world_with_brush("dev/dev_hazzardstripe01a").replace(
-        '"material"', '"Material"'
-    )
+    text = _wrap_world_with_brush("dev/dev_hazzardstripe01a").replace('"material"', '"Material"')
     finding = Finding(
         issue_id="csgo_blacklisted_materials",
         severity="warn",

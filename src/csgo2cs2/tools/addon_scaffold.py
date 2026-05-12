@@ -177,9 +177,7 @@ def create(cfg: Config, addon: str, *, force: bool = False) -> Path:
             "Run `csgo2cs2 init --interactive` first."
         )
     if d.exists() and any(d.iterdir()) and not force:
-        raise FileExistsError(
-            f"{d} already exists and is not empty. Pass force=True to overwrite."
-        )
+        raise FileExistsError(f"{d} already exists and is not empty. Pass force=True to overwrite.")
     d.mkdir(parents=True, exist_ok=True)
     (d / "maps").mkdir(exist_ok=True)
     info_file = d / "addoninfo.gi"

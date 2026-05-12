@@ -172,4 +172,3 @@ entity
     parsed = json.loads(buf.getvalue())
     assert rc == 0
     assert parsed["summary"]["total"] == 0
-

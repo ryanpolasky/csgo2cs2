@@ -217,9 +217,7 @@ def test_candidate_dirs_dedupes_identical_paths(tmp_path: Path, monkeypatch) -> 
 # ---- resolve_downloaded_bsp -------------------------------------------------
 
 
-def test_resolve_downloaded_bsp_returns_raw_bsp_when_present(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_resolve_downloaded_bsp_returns_raw_bsp_when_present(tmp_path: Path, monkeypatch) -> None:
     """Sanity: when SteamCMD dropped a raw `.bsp` into the expected
     path, `resolve_downloaded_bsp` returns it unmodified."""
     fake_root = tmp_path / "tools" / "steamcmd"
@@ -265,9 +263,7 @@ def test_resolve_downloaded_bsp_unwraps_legacy_bin(tmp_path: Path, monkeypatch) 
     assert str(scratch / "unwrap" / "X") in str(result)
 
 
-def test_resolve_downloaded_bsp_returns_none_when_dir_empty(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_resolve_downloaded_bsp_returns_none_when_dir_empty(tmp_path: Path, monkeypatch) -> None:
     """No raw .bsp and no _legacy.bin -> None so the caller can produce
     a helpful "what is actually here" error rather than guessing."""
     fake_root = tmp_path / "tools" / "steamcmd"

@@ -10,4 +10,3 @@ from . import (
     vmf_top_level,  # noqa: F401  (vmf_missing_top_level_keys fixer)
 )
 from .base import FixResult, apply_all, get, register  # noqa: F401
-

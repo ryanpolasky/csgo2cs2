@@ -138,4 +138,3 @@ def extract_bsp_assets(cfg: Config, bsp_path: Path, output_dir: Path) -> Extract
             "rely on base CS:GO assets only"
         ),
     )
-

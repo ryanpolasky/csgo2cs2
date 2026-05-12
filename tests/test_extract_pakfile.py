@@ -188,4 +188,3 @@ def test_extract_bsp_assets_builtin_handles_subdirs(tmp_path: Path) -> None:
     assert (out / "materials" / "recoil_master" / "banners" / "sticker.vmt").is_file()
     assert (out / "materials" / "recoil_master" / "icons" / "ghosthair.vmt").is_file()
     assert (out / "sound" / "recoil_master" / "click.wav").is_file()
-

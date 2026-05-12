@@ -537,4 +537,3 @@ def run(
 
     _stage_farewell(addon)
     return 0
-

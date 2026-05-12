@@ -144,9 +144,7 @@ def test_custom_skybox_skips_substitution():
     )
     # no skybox_unknown finding because the analyzer treats sky_dust as
     # author-shipped custom.
-    sky_findings = [
-        f for f in a.findings if f.issue_id in ("skybox_unknown", "skybox_hdr_only")
-    ]
+    sky_findings = [f for f in a.findings if f.issue_id in ("skybox_unknown", "skybox_hdr_only")]
     assert sky_findings == []
 
 
@@ -160,7 +158,5 @@ def test_custom_skybox_matches_with_face_suffix():
         default_skybox="sky_cs_office",
         custom_skies=["sky_mymap_up", "sky_mymap"],
     )
-    sky_findings = [
-        f for f in a.findings if f.issue_id in ("skybox_unknown", "skybox_hdr_only")
-    ]
+    sky_findings = [f for f in a.findings if f.issue_id in ("skybox_unknown", "skybox_hdr_only")]
     assert sky_findings == []

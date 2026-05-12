@@ -169,4 +169,3 @@ def run(args: argparse.Namespace) -> int:
         error(str(exc))
         info("Re-run with --skip-import to do download/decompile/analyze on this OS.")
         return 1
-

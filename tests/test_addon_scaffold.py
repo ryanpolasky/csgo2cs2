@@ -125,4 +125,3 @@ def test_create_force_overwrites(tmp_path: Path) -> None:
 def test_create_rejects_when_cs2_addons_path_unset() -> None:
     with pytest.raises(RuntimeError, match="cs2_addons_path is not set"):
         create(Config(), "foo")
-

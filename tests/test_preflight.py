@@ -204,9 +204,7 @@ def test_autofix_returns_false_when_no_fixable_error(tmp_path: Path) -> None:
     cfg = _baseline_cfg(tmp_path)
     # workspace is fine -> the report has no fixable errors
     report = preflight.run_preflight(cfg, addon="my_addon", skip_import=True)
-    assert preflight.try_autofix_interactive(
-        cfg, None, report, prompt_fn=lambda _p: ""
-    ) is False
+    assert preflight.try_autofix_interactive(cfg, None, report, prompt_fn=lambda _p: "") is False
 
 
 def test_autofix_relocates_workspace_when_user_accepts_default(tmp_path: Path) -> None:
@@ -235,9 +233,7 @@ def test_autofix_relocates_workspace_when_user_accepts_default(tmp_path: Path) -
     pf_default = pf._default_safe_workspace
     pf._default_safe_workspace = lambda: override  # type: ignore[assignment]
     try:
-        applied = pf.try_autofix_interactive(
-            cfg, str(cfg_path), report, prompt_fn=lambda _p: ""
-        )
+        applied = pf.try_autofix_interactive(cfg, str(cfg_path), report, prompt_fn=lambda _p: "")
     finally:
         pf._default_safe_workspace = pf_default  # type: ignore[assignment]
 
@@ -324,9 +320,7 @@ def test_autofix_migrates_drift_state_to_new_workspace(tmp_path: Path) -> None:
             )
         }
     )
-    (spaced / DRIFT_STATE_FILENAME).write_text(
-        json.dumps(state.to_json_dict()), encoding="utf-8"
-    )
+    (spaced / DRIFT_STATE_FILENAME).write_text(json.dumps(state.to_json_dict()), encoding="utf-8")
 
     report = preflight.run_preflight(cfg, addon="my_addon", skip_import=True)
     assert any(i.id == "workspace_has_space" for i in report.errors)
@@ -337,9 +331,7 @@ def test_autofix_migrates_drift_state_to_new_workspace(tmp_path: Path) -> None:
     pf_default = pf._default_safe_workspace
     pf._default_safe_workspace = lambda: override  # type: ignore[assignment]
     try:
-        applied = pf.try_autofix_interactive(
-            cfg, str(cfg_path), report, prompt_fn=lambda _p: ""
-        )
+        applied = pf.try_autofix_interactive(cfg, str(cfg_path), report, prompt_fn=lambda _p: "")
     finally:
         pf._default_safe_workspace = pf_default  # type: ignore[assignment]
 
@@ -348,4 +340,3 @@ def test_autofix_migrates_drift_state_to_new_workspace(tmp_path: Path) -> None:
     # data made it across
     moved = json.loads((override / DRIFT_STATE_FILENAME).read_text(encoding="utf-8"))
     assert "/some/cs2/import_map_community.py" in moved.get("entries", {})
-
