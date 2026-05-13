@@ -22,6 +22,7 @@ from .commands import init_cmd as cmd_init
 from .commands import launch_cmd as cmd_launch
 from .commands import list_cmd as cmd_list
 from .commands import port as cmd_port
+from .commands import port_bulk as cmd_port_bulk
 from .commands import publish_cmd as cmd_publish
 from .commands import selftest_cmd as cmd_selftest
 from .commands import status_cmd as cmd_status
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmd_analyze.register(sub)
     cmd_explain.register(sub)
     cmd_port.register(sub)
+    cmd_port_bulk.register(sub)
     cmd_list.register(sub)
     cmd_status.register(sub)
     cmd_cleanup.register(sub)
