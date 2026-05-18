@@ -56,6 +56,11 @@ def test_blacklist_known_materials():
         # render as missing-material warnings. Substitute upstream.
         "dev/dev_measurecrate01",
         "dev/dev_measurewall01a",
+        # `dev_measuregeneric01`: CS2 ships a .vmat_c at this path but
+        # it's a *grey* grid, while CSGO's was the warm orange/tan dev
+        # grid. Substitute upstream so ported maps preserve the original
+        # warm-toned look.
+        "dev/dev_measuregeneric01",
     }
     assert set(CSGO_BLACKLISTED_MATERIALS.keys()) == expected
     # every substitute material is a real, stable cs2 stock path
@@ -102,6 +107,30 @@ def test_fixer_substitutes_dev_measurewall01a_via_analyze():
     new_text, _applied, _detail = fix_csgo_blacklisted_materials(text, bl[0])
     assert "dev/dev_measuredesk" in new_text
     assert "dev/dev_measurewall01a" not in new_text
+
+
+def test_dev_measuregeneric01_substitutes_to_dev_measuredesk():
+    # CS2's `dev_measuregeneric01` is a grey grid, but CSGO's was the warm
+    # orange/tan dev grid. Color-correction substitute -- not a
+    # missing-asset case (the .vmat_c exists in CS2 core), but the art is
+    # different from CSGO so substituting at .vmf time preserves the
+    # source map's authored look. Surfaced by the awp_lego_orange port
+    # where most surfaces inherit the grey CS2 art.
+    assert CSGO_BLACKLISTED_MATERIALS["dev/dev_measuregeneric01"] == "dev/dev_measuredesk"
+
+
+def test_fixer_substitutes_dev_measuregeneric01_via_analyze():
+    # end-to-end: analyze_vmf -> apply_all picks up dev_measuregeneric01.
+    text = _wrap_world_with_brush("dev/dev_measuregeneric01")
+    a = analyze_vmf(text)
+    bl = [f for f in a.findings if f.issue_id == "csgo_blacklisted_materials"]
+    assert len(bl) == 1
+    assert "dev/dev_measuregeneric01" in bl[0].context["refs"]
+    new_text, _applied, _detail = fix_csgo_blacklisted_materials(text, bl[0])
+    assert "dev/dev_measuredesk" in new_text
+    # ensure we didn't accidentally match `dev_measuregeneric01b` (the
+    # other dev grid name that contains this as a substring).
+    assert '"material" "dev/dev_measuregeneric01"' not in new_text
 
 
 def test_find_blacklisted_material_refs():

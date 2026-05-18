@@ -276,6 +276,24 @@ CSGO_BLACKLISTED_MATERIALS: Dict[str, str] = {
     # ground rendered white instead of the original orange.
     "dev/dev_measurecrate01": "dev/dev_measuredesk",
     "dev/dev_measurewall01a": "dev/dev_measuredesk",
+    # `dev_measuregeneric01` is the "warm" CSGO dev grid (orange/tan with
+    # measurement labels). CS2 ships a .vmat_c at the same path but it's
+    # a *grey* grid, not orange -- different art under the same asset
+    # name. So there's no missing-asset warning, but every brush that
+    # used `dev_measuregeneric01` in the CSGO source renders grey in
+    # CS2 instead of the authored warm tone. Substitute with the proven
+    # CS2-native orange dev texture (`dev_measuredesk`) so ported maps
+    # preserve their original look.
+    #
+    # Side-effect: any other CSGO map that uses `dev_measuregeneric01`
+    # purely as a neutral dev grid will now render orange instead of
+    # grey. We accept that -- the source intent in CSGO was warm-toned,
+    # and `dev_measuredesk` is still a dev texture (so it stays clearly
+    # identifiable as "this surface is unfinished"). Surfaced by the
+    # awp_lego_orange port (workshop 573220700) where walls + raised
+    # floor rendered grey after the v1+v2 fixes because they were
+    # authored against the CSGO `dev_measuregeneric01` art.
+    "dev/dev_measuregeneric01": "dev/dev_measuredesk",
 }
 
 # Regex that finds every `"material" "<path>"` KV pair. Used by the
