@@ -220,6 +220,61 @@ def test_collect_vmf_refs_missing_file_returns_empty(tmp_path):
     assert _collect_vmf_refs(tmp_path / "nope.vmf") == []
 
 
+def test_collect_vmf_refs_picks_up_infodecal_texture_key(tmp_path):
+    # `infodecal` entities reference their decal via `"texture"` -- not
+    # `"material"`. Without scanning this key, stock CSGO decals never
+    # reach source1import and ship as missing-material warnings at Hammer
+    # build time. Surfaced by the awp_lego_orange port (workshop 573220700).
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text(
+        "entity\n{\n"
+        '  "id" "113"\n'
+        '  "origin" "2 1243 -152.111"\n'
+        '  "texture" "decals/graffiti_quadawp"\n'
+        '  "classname" "infodecal"\n'
+        "}\n"
+        "entity\n{\n"
+        '  "id" "114"\n'
+        '  "origin" "17 -1188 -152.111"\n'
+        '  "texture" "decals/graffiti_quadawp"\n'
+        '  "classname" "infodecal"\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    refs = _collect_vmf_refs(vmf)
+    assert refs == ["materials/decals/graffiti_quadawp.vmt"]
+
+
+def test_collect_vmf_refs_texture_key_normalises_like_material(tmp_path):
+    # Same normalisation as the `"material"` scan: forward-slash, lower-case,
+    # strip an explicit `.vmt`, skip empty + `tools/*` values.
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text(
+        'entity\n{\n  "texture" "DECALS\\Graffiti_QuadAWP.vmt"\n}\n'
+        'entity\n{\n  "texture" "tools/toolsclip"\n}\n'
+        'entity\n{\n  "texture" "" \n}\n',
+        encoding="utf-8",
+    )
+    refs = _collect_vmf_refs(vmf)
+    assert refs == ["materials/decals/graffiti_quadawp.vmt"]
+
+
+def test_collect_vmf_refs_merges_material_and_texture(tmp_path):
+    # Both keys contribute to the same deduped set. Real awp_lego_orange
+    # decals + brush dev textures coexist in the same .vmf.
+    vmf = tmp_path / "test.vmf"
+    vmf.write_text(
+        'side\n{\n  "material" "dev/dev_measuredesk"\n}\n'
+        'entity\n{\n  "texture" "decals/graffiti_quadawp"\n  "classname" "infodecal"\n}\n',
+        encoding="utf-8",
+    )
+    refs = _collect_vmf_refs(vmf)
+    assert refs == [
+        "materials/decals/graffiti_quadawp.vmt",
+        "materials/dev/dev_measuredesk.vmt",
+    ]
+
+
 def test_collect_vmf_refs_emits_skybox_faces(tmp_path):
     # worldspawn `"skyname"` resolves to 6 face vmts under
     # `materials/skybox/`. We emit both naming conventions to cover

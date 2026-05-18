@@ -1255,6 +1255,16 @@ def _collect_custom_skies(extracted_dir: Path) -> list[str]:
 _VMF_MATERIAL_RE = re.compile(r'"material"\s*"([^"\n]+)"', re.IGNORECASE)
 _VMF_MODEL_RE = re.compile(r'"model"\s*"([^"\n]+)"', re.IGNORECASE)
 _VMF_SKYNAME_RE = re.compile(r'"skyname"\s*"([^"\n]+)"', re.IGNORECASE)
+# `infodecal` entities reference their decal via `"texture"` (not
+# `"material"`). Same goes for older overlays in some bspsource output.
+# The value is a path under `materials/` without the `.vmt` extension,
+# e.g. `"texture" "decals/graffiti_quadawp"` -> `materials/decals/graffiti_quadawp.vmt`.
+# Without this, source1import never sees the decal in its file list and
+# the resulting .vmat_c is missing, so Hammer build emits
+#   Failed loading resource "materials/decals/<name>.vmat_c" (ERROR_FILEOPEN: File not found)
+# Surfaced by the awp_lego_orange port (workshop 573220700) for its
+# `decals/graffiti_quadawp` decal.
+_VMF_TEXTURE_RE = re.compile(r'"texture"\s*"([^"\n]+)"', re.IGNORECASE)
 
 # Source 1 skyboxes are 6 .vmts named `<skyname>_<face>.vmt` under
 # `materials/skybox/`. Map's worldspawn carries `"skyname" "<name>"`;
@@ -1284,6 +1294,21 @@ def _collect_vmf_refs(vmf_path: Path) -> list[str]:
         if val.startswith("tools/"):
             continue
         # a small number of .vmf assets reference the .vmt by extension.
+        if val.endswith(".vmt"):
+            val = val[:-4]
+        if not val:
+            continue
+        refs.add(f"materials/{val}.vmt")
+    # `infodecal.texture` -> same materials/<path>.vmt shape as the brush-
+    # side `material` key. Without scanning this key, stock CSGO decals
+    # (graffiti, logos, scorch marks) never reach source1import and ship
+    # as missing-material warnings.
+    for m in _VMF_TEXTURE_RE.finditer(text):
+        val = m.group(1).strip().replace("\\", "/").lower()
+        if not val:
+            continue
+        if val.startswith("tools/"):
+            continue
         if val.endswith(".vmt"):
             val = val[:-4]
         if not val:

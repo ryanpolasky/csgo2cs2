@@ -256,6 +256,20 @@ CSGO_BLACKLISTED_MATERIALS: Dict[str, str] = {
     # `tools/toolsnodraw` (the catch-all hidden brush material) since
     # nothing user-facing should ever see this texture.
     "tools/locked": "tools/toolsnodraw",
+    # source1import also blacklists every CSGO `dev/dev_measure*` material,
+    # but CS2 core only ships compiled .vmat_c for a subset of those names.
+    # `dev_measuredesk` and `dev_measuregeneric01` are present in CS2 core
+    # and render fine when referenced. `dev_measurecrate01` and
+    # `dev_measurewall01a` are NOT in CS2 core -- the importer blacklists
+    # the .vmt source AND the .vmat_c destination doesn't exist, so brushes
+    # using them ship as missing-material warnings ("Trying to load an
+    # illegal resource name materials/dev/dev_measurecrate01.vmat!") plus
+    # purple/black checkers in-engine. Substitute with the same
+    # `dev_measuregeneric01b` grid we use for the other dev-blacklist entries.
+    # Surfaced by the awp_lego_orange port (workshop 573220700) which
+    # heavily uses both as world-brush placeholder textures.
+    "dev/dev_measurecrate01": "dev/dev_measuregeneric01b",
+    "dev/dev_measurewall01a": "dev/dev_measuregeneric01b",
 }
 
 # Regex that finds every `"material" "<path>"` KV pair. Used by the

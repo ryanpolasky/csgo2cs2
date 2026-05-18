@@ -44,17 +44,61 @@ def test_norm_mat_strips_extension_and_prefix():
 
 
 def test_blacklist_known_materials():
-    # all 4 entries in the source1import blacklist round-trip cleanly
+    # entries in the source1import blacklist round-trip cleanly
     expected = {
         "dev/dev_hazzardstripe01a",
         "dev/reflectivity_90b",
         "editor/gray",
         "tools/locked",
+        # `dev_measurecrate01` + `dev_measurewall01a`: source1import
+        # blacklists them like the other dev/* materials, but CS2 core
+        # doesn't ship a .vmat_c equivalent, so brushes referencing them
+        # render as missing-material warnings. Substitute upstream.
+        "dev/dev_measurecrate01",
+        "dev/dev_measurewall01a",
     }
     assert set(CSGO_BLACKLISTED_MATERIALS.keys()) == expected
     # every substitute material is a real, stable cs2 stock path
     for replacement in CSGO_BLACKLISTED_MATERIALS.values():
         assert replacement.startswith(("dev/", "tools/"))
+
+
+def test_dev_measure_blacklist_substitutes_to_known_cs2_stock():
+    # both dev_measure entries should substitute to the same proven
+    # CS2-stock dev grid we use for the other dev/* blacklist entries.
+    assert CSGO_BLACKLISTED_MATERIALS["dev/dev_measurecrate01"] == "dev/dev_measuregeneric01b"
+    assert CSGO_BLACKLISTED_MATERIALS["dev/dev_measurewall01a"] == "dev/dev_measuregeneric01b"
+
+
+def test_fixer_substitutes_dev_measurecrate01():
+    # awp_lego_orange regression: source1import blacklists the .vmt and
+    # CS2 core has no .vmat_c, so the brush ships as missing material.
+    # The fixer rewrites every brush-side ref to the proven CS2-stock
+    # `dev/dev_measuregeneric01b` so the .vmat_c resolves at build time.
+    text = _wrap_world_with_brush("dev/dev_measurecrate01")
+    finding = Finding(
+        issue_id="csgo_blacklisted_materials",
+        severity="warn",
+        message="",
+        fixable=True,
+        context={"refs": ["dev/dev_measurecrate01"]},
+    )
+    new_text, applied, _detail = fix_csgo_blacklisted_materials(text, finding)
+    assert applied is True
+    assert "dev/dev_measuregeneric01b" in new_text
+    assert "dev/dev_measurecrate01" not in new_text
+
+
+def test_fixer_substitutes_dev_measurewall01a_via_analyze():
+    # end-to-end: analyze_vmf -> apply_all picks up dev_measurewall01a.
+    text = _wrap_world_with_brush("dev/dev_measurewall01a")
+    a = analyze_vmf(text)
+    bl = [f for f in a.findings if f.issue_id == "csgo_blacklisted_materials"]
+    assert len(bl) == 1
+    assert "dev/dev_measurewall01a" in bl[0].context["refs"]
+    new_text, _applied, _detail = fix_csgo_blacklisted_materials(text, bl[0])
+    assert "dev/dev_measuregeneric01b" in new_text
+    assert "dev/dev_measurewall01a" not in new_text
 
 
 def test_find_blacklisted_material_refs():
