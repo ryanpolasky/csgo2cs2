@@ -264,12 +264,18 @@ CSGO_BLACKLISTED_MATERIALS: Dict[str, str] = {
     # the .vmt source AND the .vmat_c destination doesn't exist, so brushes
     # using them ship as missing-material warnings ("Trying to load an
     # illegal resource name materials/dev/dev_measurecrate01.vmat!") plus
-    # purple/black checkers in-engine. Substitute with the same
-    # `dev_measuregeneric01b` grid we use for the other dev-blacklist entries.
-    # Surfaced by the awp_lego_orange port (workshop 573220700) which
-    # heavily uses both as world-brush placeholder textures.
-    "dev/dev_measurecrate01": "dev/dev_measuregeneric01b",
-    "dev/dev_measurewall01a": "dev/dev_measuregeneric01b",
+    # purple/black checkers in-engine.
+    #
+    # Substitute with `dev/dev_measuredesk` (orange Valve lego pattern,
+    # CS2-native) rather than `dev_measuregeneric01b` (white/grey grid)
+    # because both CSGO source materials ARE the orange dev family --
+    # mapping them to white would visibly change the look of every brush
+    # that uses them. Surfaced by the awp_lego_orange port (workshop
+    # 573220700) which heavily uses both as world-brush placeholder
+    # textures; an early test substituted to the grey variant and the
+    # ground rendered white instead of the original orange.
+    "dev/dev_measurecrate01": "dev/dev_measuredesk",
+    "dev/dev_measurewall01a": "dev/dev_measuredesk",
 }
 
 # Regex that finds every `"material" "<path>"` KV pair. Used by the

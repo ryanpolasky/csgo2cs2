@@ -63,18 +63,21 @@ def test_blacklist_known_materials():
         assert replacement.startswith(("dev/", "tools/"))
 
 
-def test_dev_measure_blacklist_substitutes_to_known_cs2_stock():
-    # both dev_measure entries should substitute to the same proven
-    # CS2-stock dev grid we use for the other dev/* blacklist entries.
-    assert CSGO_BLACKLISTED_MATERIALS["dev/dev_measurecrate01"] == "dev/dev_measuregeneric01b"
-    assert CSGO_BLACKLISTED_MATERIALS["dev/dev_measurewall01a"] == "dev/dev_measuregeneric01b"
+def test_dev_measure_blacklist_substitutes_to_orange_dev_texture():
+    # both dev_measure entries should substitute to `dev_measuredesk`, the
+    # orange Valve-lego CS2-native dev texture. Mapping the orange CSGO
+    # source materials to the grey `dev_measuregeneric01b` was a visible
+    # regression in the awp_lego_orange port (ground rendered white).
+    assert CSGO_BLACKLISTED_MATERIALS["dev/dev_measurecrate01"] == "dev/dev_measuredesk"
+    assert CSGO_BLACKLISTED_MATERIALS["dev/dev_measurewall01a"] == "dev/dev_measuredesk"
 
 
 def test_fixer_substitutes_dev_measurecrate01():
     # awp_lego_orange regression: source1import blacklists the .vmt and
     # CS2 core has no .vmat_c, so the brush ships as missing material.
     # The fixer rewrites every brush-side ref to the proven CS2-stock
-    # `dev/dev_measuregeneric01b` so the .vmat_c resolves at build time.
+    # `dev/dev_measuredesk` so the .vmat_c resolves at build time AND the
+    # brush keeps its original orange color.
     text = _wrap_world_with_brush("dev/dev_measurecrate01")
     finding = Finding(
         issue_id="csgo_blacklisted_materials",
@@ -85,7 +88,7 @@ def test_fixer_substitutes_dev_measurecrate01():
     )
     new_text, applied, _detail = fix_csgo_blacklisted_materials(text, finding)
     assert applied is True
-    assert "dev/dev_measuregeneric01b" in new_text
+    assert "dev/dev_measuredesk" in new_text
     assert "dev/dev_measurecrate01" not in new_text
 
 
@@ -97,7 +100,7 @@ def test_fixer_substitutes_dev_measurewall01a_via_analyze():
     assert len(bl) == 1
     assert "dev/dev_measurewall01a" in bl[0].context["refs"]
     new_text, _applied, _detail = fix_csgo_blacklisted_materials(text, bl[0])
-    assert "dev/dev_measuregeneric01b" in new_text
+    assert "dev/dev_measuredesk" in new_text
     assert "dev/dev_measurewall01a" not in new_text
 
 
