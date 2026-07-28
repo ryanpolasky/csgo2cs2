@@ -132,6 +132,8 @@ class ImportMapTool:
             skip_deps=skip_deps,
             extra_args=extra_args,
         )
+        if stdin_input is not None and os.name == "nt":
+            cmd = _auto_confirm_windows_prompt(cmd)
         env = _env_with_extra_path(extra_path_dirs)
         if not stream:
             return subprocess.run(
@@ -143,6 +145,21 @@ class ImportMapTool:
                 input=stdin_input,
             )
         return _run_streaming(cmd, on_line=on_line, env=env, stdin_input=stdin_input)
+
+
+def _auto_confirm_windows_prompt(cmd: Sequence[str]) -> list[str]:
+    if len(cmd) < 2:
+        return list(cmd)
+    launcher = (
+        "import msvcrt, os, runpy, sys; "
+        "msvcrt.kbhit=lambda: True; "
+        "msvcrt.getch=lambda: b'\\r'; "
+        "script=sys.argv[1]; "
+        "sys.path.insert(0, os.path.dirname(script)); "
+        "sys.argv=sys.argv[1:]; "
+        "runpy.run_path(script, run_name='__main__')"
+    )
+    return [cmd[0], "-c", launcher, *cmd[1:]]
 
 
 def _ensure_utlc_getch_hardened(importer_path: Path) -> None:

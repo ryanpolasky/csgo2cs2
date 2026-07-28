@@ -17,6 +17,7 @@ from csgo2cs2.tools.import_map import (
     HeartbeatPrinter,
     ImportInputs,
     ImportMapTool,
+    _auto_confirm_windows_prompt,
     _env_with_extra_path,
     _fmt_elapsed,
     _run_streaming,
@@ -164,6 +165,16 @@ def test_import_map_none_python_executable_falls_back(tmp_path):
     tool = ImportMapTool(importer_path=str(importer), python_executable=None)
     cmd = tool.build_command(_inputs(tmp_path))
     assert cmd[0] == sys.executable
+
+
+def test_auto_confirm_windows_prompt_wraps_importer_command():
+    cmd = ["py3", "C:/tools/import_map_community.py", "source", "target"]
+    wrapped = _auto_confirm_windows_prompt(cmd)
+
+    assert wrapped[:2] == ["py3", "-c"]
+    assert "msvcrt.kbhit=lambda: True" in wrapped[2]
+    assert "msvcrt.getch=lambda: b'\\r'" in wrapped[2]
+    assert wrapped[3:] == cmd[1:]
 
 
 def test_env_with_extra_path_prepends(tmp_path):
